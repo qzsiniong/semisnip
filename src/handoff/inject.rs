@@ -1,4 +1,5 @@
-//! 需要合成键盘事件的两处：回删残留触发符、`match exec` 失败时的粘贴兜底。
+//! 需要合成键盘事件的几处：回删残留触发符、无法拦截时的补位空格、
+//! `match exec` 失败时的粘贴兜底。
 //!
 //! 都在后台线程调用；合成事件带自己的 source pid，会被 tap 的
 //! "自己人"判断放行（见 `trigger::tap`）。
@@ -55,6 +56,17 @@ mod imp {
         }
     }
 
+    /// 打出 `count` 个空格。
+    ///
+    /// 仅在没有 tap、无法拦截 espanso 补偿退格时使用：用空格占住
+    /// 「espanso 将要回删的字符数」，让它删的是空白而不是用户文本。
+    pub fn type_spaces(count: usize) {
+        for _ in 0..count {
+            press(crate::trigger::keymap::SPACE as u16, 0);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// 合成一个命名按键（调试用）。
     pub fn press_named(name: &str) {
         let code = match name {
@@ -88,12 +100,13 @@ mod imp {
 #[cfg(not(target_os = "macos"))]
 mod imp {
     pub fn backspace(_count: usize) {}
+    pub fn type_spaces(_count: usize) {}
     pub fn paste() {}
     pub fn type_text(_text: &str) {}
     pub fn press_named(_name: &str) {}
 }
 
-pub use imp::{backspace, paste, press_named, type_text};
+pub use imp::{backspace, paste, press_named, type_spaces, type_text};
 
 /// 把文本放进系统剪贴板（macOS 用 `pbcopy`，省一个 crate）。
 pub fn set_clipboard(text: &str) -> anyhow::Result<()> {

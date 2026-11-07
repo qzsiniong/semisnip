@@ -83,6 +83,7 @@ pub const BACKSPACE: u32 = 51;
 pub const TAB: u32 = 48;
 pub const RETURN: u32 = 36;
 pub const ESCAPE: u32 = 53;
+pub const SPACE: u32 = 49;
 pub const LEFT: u32 = 123;
 pub const RIGHT: u32 = 124;
 pub const DOWN: u32 = 125;

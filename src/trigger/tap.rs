@@ -9,7 +9,7 @@
 //! 2. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
 //! 3. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -17,10 +17,19 @@ use std::time::Instant;
 use crate::app::event::{Event, KeyMsg};
 use crate::trigger::machine::{TriggerAction, TriggerConfig, TriggerMachine};
 
+/// 补偿退格的吞掉窗口：espanso 收到 `match exec` 后几乎立刻发退格，
+/// 但系统繁忙时可能晚几十毫秒。窗口只用来兜底，正常情况下会被
+/// 「遇到其它按键就收手」提前结束。
+const SWALLOW_WINDOW_MS: i64 = 800;
+
 pub struct TapShared {
     panel_open: AtomicBool,
     machine: Mutex<TriggerMachine>,
     tx: Sender<Event>,
+    /// 还要吞掉多少个「别的进程合成的」退格。
+    pending_backspaces: AtomicUsize,
+    /// 上述额度的截止时间（epoch ms）。
+    swallow_deadline_ms: AtomicI64,
 }
 
 impl TapShared {
@@ -29,7 +38,33 @@ impl TapShared {
             panel_open: AtomicBool::new(false),
             machine: Mutex::new(TriggerMachine::new(config)),
             tx,
+            pending_backspaces: AtomicUsize::new(0),
+            swallow_deadline_ms: AtomicI64::new(0),
         }
+    }
+
+    fn arm_backspace_swallow(&self, count: usize) {
+        self.pending_backspaces.store(count, Ordering::SeqCst);
+        self.swallow_deadline_ms
+            .store(crate::usage::now_ms() + SWALLOW_WINDOW_MS, Ordering::SeqCst);
+    }
+
+    fn clear_backspace_swallow(&self) {
+        self.pending_backspaces.store(0, Ordering::SeqCst);
+    }
+
+    /// 是否应该吞掉这一个退格。只对调用方确认过「不是自己发的」事件调用。
+    fn take_backspace(&self) -> bool {
+        if self.pending_backspaces.load(Ordering::SeqCst) == 0 {
+            return false;
+        }
+        if crate::usage::now_ms() > self.swallow_deadline_ms.load(Ordering::SeqCst) {
+            self.clear_backspace_swallow();
+            return false;
+        }
+        self.pending_backspaces
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
     }
 
     pub fn set_trigger(&self, config: TriggerConfig) {
@@ -59,6 +94,24 @@ pub fn is_panel_open() -> bool {
 /// tap 是否已装上（缺权限时为 false，此时走 espanso shell 降级路径）。
 pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
+}
+
+/// 预告：接下来会有 `count` 个由 espanso 合成的退格，别让它们落到目标 App。
+///
+/// `espanso match exec` 会按 trigger 全长回删字符（引擎里的 TriggerCompensation）。
+/// 我们调用前已经把面板吞掉的触发符删掉了，如果放任这些退格通过，
+/// 它们会顺着光标继续吃掉用户的真实字符（`9876543210` → `98765`）。
+pub fn swallow_synthetic_backspaces(count: usize) {
+    if let Some(shared) = SHARED.get() {
+        shared.arm_backspace_swallow(count);
+    }
+}
+
+/// 撤销预告（`match exec` 连 IPC 都没成功时用，避免误吞后续按键）。
+pub fn clear_synthetic_backspaces() {
+    if let Some(shared) = SHARED.get() {
+        shared.clear_backspace_swallow();
+    }
 }
 
 /// 是否已获得辅助功能授权（决定走 tap 还是 espanso shell）。
@@ -177,6 +230,24 @@ mod imp {
 
                 let code = CGEventGetIntegerValueField(event, FIELD_KEYCODE) as u32;
                 let flags = CGEventGetFlags(event);
+
+                // espanso 展开时会先按 trigger 全长发一串退格（TriggerCompensation）。
+                // 这些是它合成的键盘事件（source 是 espanso 的 pid），必须在
+                // 到达目标 App 之前吞掉，否则会删掉用户光标前的真实字符。
+                if code == crate::trigger::keymap::BACKSPACE {
+                    if source > 0
+                        && !ctx.shared.panel_open.load(Ordering::SeqCst)
+                        && ctx.shared.take_backspace()
+                    {
+                        log::debug!("吞掉 espanso 的补偿退格（source={source}）");
+                        return std::ptr::null_mut();
+                    }
+                } else if source > 0 {
+                    // 补偿退格总在展开文本之前；出现别的键就说明这一轮结束了，
+                    // 立刻收手，避免误吞用户后续的退格。
+                    ctx.shared.clear_backspace_swallow();
+                }
+
                 let msg = KeyMsg {
                     code,
                     shift: flags & FLAG_SHIFT != 0,
@@ -301,5 +372,48 @@ mod imp {
         let _ = shared.tx.send(Event::TapUnavailable(
             "当前平台需要 espanso shell 触发".into(),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    fn shared() -> TapShared {
+        let (tx, _rx) = channel();
+        TapShared::new(TriggerConfig::default(), tx)
+    }
+
+    #[test]
+    fn swallow_budget_is_exact() {
+        let shared = shared();
+        shared.arm_backspace_swallow(2);
+        assert!(shared.take_backspace(), "第 1 个应该被吞");
+        assert!(shared.take_backspace(), "第 2 个应该被吞");
+        assert!(!shared.take_backspace(), "额度用完就不能再吞");
+    }
+
+    #[test]
+    fn expired_budget_does_not_eat_keys() {
+        let shared = shared();
+        shared.arm_backspace_swallow(3);
+        shared
+            .swallow_deadline_ms
+            .store(crate::usage::now_ms() - 1, Ordering::SeqCst);
+        assert!(!shared.take_backspace(), "过期后必须放行");
+        assert_eq!(
+            shared.pending_backspaces.load(Ordering::SeqCst),
+            0,
+            "过期时应顺手清零，避免下一轮误吞"
+        );
+    }
+
+    #[test]
+    fn clearing_cancels_pending() {
+        let shared = shared();
+        shared.arm_backspace_swallow(4);
+        shared.clear_backspace_swallow();
+        assert!(!shared.take_backspace());
     }
 }

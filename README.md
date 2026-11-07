@@ -240,6 +240,7 @@ RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同�
 - **`erase` 依赖「espanso 看不到触发键」这一前提**。如果某个 espanso 版本也去消费 `;;`，并且它的 tap 排在 snipshot 前面，espanso 会自己抹掉 `;;`，而 snipshot 仍会回删 1 个字符，正好吃掉光标前的一个字。目前只是观察结论，未做确定性防护。
 - **`match exec` 无回执**，失败只能看日志；粘贴兜底会覆盖剪贴板。
 - **app-specific 过滤规则未复刻**，`filter_class` / `filter_exec` 场景下的候选可能比 espanso 原生搜索框多。
+- **中文输入法下触发串可能变成全角**。`；；` 与 ASCII `;;` 不是同一个字符串，espanso 的匹配与回删又发生在输入法提交之前，实测可能残留全角触发符。触发时切到英文输入法最稳。
 - **仅 macOS**。
 - **ad-hoc 签名**，分发需要 Developer ID。
 
