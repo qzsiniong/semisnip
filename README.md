@@ -76,6 +76,50 @@ snipshot doctor
 - **排序**：精确 `1000` > 前缀 `800~700` > 子串 `600` > 子序列 `300`，再叠加使用频率与最近使用时间。使用统计存在 `usage.json`，丢了只影响排序，不影响功能。
 - **`$|$` 光标标记**在预览里原样保留，不会被当成变量。
 
+## 菜单栏图标
+
+daemon 是常驻进程，但**不进 Dock、不进 Cmd-Tab**：`Info.plist` 里 `LSUIElement=true`，二进制启动后还会再调一次 `set_activation_policy(Accessory)`——只靠 plist 不够，gpui 启动时会把策略按自己的默认（Regular）设回去。
+
+用户能看见它的地方只有菜单栏那一个图标（模板图，深浅色自动反色）：
+
+```
+打开片段面板        ← 和 `;;` 等价，只是不用切回输入框
+──────────
+重建索引
+──────────
+打开配置…           ← 用系统默认程序打开 config.json
+打开 snipshot.yml…  ← espanso 的那个降级触发定义（不存在时打开其目录）
+打开日志…
+──────────
+退出 snipshot       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
+```
+
+标记是「斜体 `I` + `;;`」：`I` 是光标，`;;` 是触发词，合起来就是产品那一句话。菜单栏用的也是它——同一个程序在两个地方必须是同一个记号。
+
+图标是**生成**的，仓库里不放二进制素材：形状在 `src/mark.rs` 里是一组解析式矩形，`build.rs` 在构建期把它渲染成 PNG 和 ICNS。所以：
+
+- 改设计只改 `src/mark.rs` 里的几个常量，`cargo build` 自动重画；
+- 每次构建都从零采样（4×4 子样本算覆盖率），16px 和 1024px 用的是同一套线条，不存在「大图缩下来发糊」；
+- 不需要 Pillow、也不需要 `iconutil`——ICNS 就是「魔数 + 一串 (类型, 长度, PNG)」，`build.rs` 里手拼，Linux 上 `cargo build` 也不会断。
+
+产出都在 `packaging/macos/`（内容没变时不重写，免得刷 mtime）：
+
+| 文件 | 用途 |
+|---|---|
+| `AppIcon.icns` | 10 个槽位（16…1024，含 @2x），`CFBundleIconFile` 指向它 |
+| `icon-preview.png` | 512px 预览，就是上面那张图 |
+| `tray-preview.png` | 菜单栏图标的深浅底色对照（放大 8 倍，用来看 15pt 下认不认得出来） |
+
+应用图标长这样：
+
+![应用图标](packaging/macos/icon-preview.png)
+
+菜单栏图标是同一个标记，只是更小（15pt 高、按比例宽 20pt）：
+
+![菜单栏图标](packaging/macos/tray-preview.png)
+
+> **图标没出现？** 先看菜单栏最左侧、刘海右边有没有一个 `«` 双箭头。有的话说明菜单栏已经排满，macOS 把新图标折叠进溢出区了——新建的状态项永远排在右边那组的末尾，也就是最先被折叠的那个。随手退出一个菜单栏常驻 app，或按住 ⌘ 拖动图标调整位置，`I` 就出来了。这个和 snipshot 本身无关：用纯文本状态项做的最小 AppKit 探针在同样环境里也一样看不见。
+
 ## 配置
 
 路径：`~/Library/Application Support/snipshot/config.json`（`snipshot install` 时生成）
@@ -256,6 +300,7 @@ CGEventTap ────────────────────┴─→
 | 预览 | `preview/vars.rs` | 只吃 `&Snippet`，**绝不执行 shell/script** |
 | 回传 | `handoff/mod.rs`、`handoff/inject.rs` | 只认 `Hit` 与 trigger 字符串，不关心 YAML 结构 |
 | 界面 | `ui/window.rs`、`ui/view.rs` | `WindowKind::PopUp`（NSPanel + NonactivatingPanel），只渲染，不处理键盘 |
+| 菜单栏 | `tray.rs` | NSStatusItem + 原生菜单；模板图（深浅色自动反色），菜单项经 GPUI action 回到 scheduler 的事件通道 |
 | 装配 | `app/state.rs`、`app/scheduler.rs` | 状态机与事件循环 |
 | 命令行 | `cli/mod.rs`、`cli/match_cmd.rs`、`cli/completion.rs`、`cli/config_cmd.rs`、`cli/log_cmd.rs`、`cli/uninstall.rs` | clap 定义命令树；补全脚本由同一份定义生成，不会和实现走偏 |
 

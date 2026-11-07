@@ -29,10 +29,15 @@ dirs = "5"
 anyhow = "1"
 clap = { version = "4.6.7", features = ["derive"] }
 clap_complete = "4.6.11"
+gpui-tray = { version = "0.3.0", default-features = false, features = ["gpui-kit"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"
 core-foundation = "0.10"
+
+# 图标在构建期渲染（见 build.rs）：只需要一个 PNG 编码器，不引入图形栈。
+[build-dependencies]
+png = "0.18"
 
 [profile.release]
 opt-level = 2

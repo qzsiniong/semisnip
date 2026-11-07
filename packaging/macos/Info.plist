@@ -10,6 +10,8 @@
     <string>com.snipshot.app</string>
     <key>CFBundleExecutable</key>
     <string>snipshot</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -20,7 +22,9 @@
     <string>13.0</string>
 
     <!-- 关键：后台常驻 + 只弹非激活面板，不要 Dock 图标、不要菜单栏。
-         不能用 LSBackgroundOnly —— 那会禁止一切窗口。 -->
+         不能用 LSBackgroundOnly —— 那会禁止一切窗口。
+         注意这里只是启动瞬间的初值：gpui 启动时会把策略按自己的默认设回
+         Regular，所以二进制里还会再调一次 set_activation_policy(Accessory)。 -->
     <key>LSUIElement</key>
     <true/>
 

@@ -19,11 +19,19 @@ APP="$OUT_DIR/$APP_NAME.app"
 echo "==> cargo build --release"
 cargo build --release
 
+# 图标由 build.rs 在构建期生成（形状定义在 src/mark.rs），这里只做存在性检查。
+# 缺了说明 build.rs 没跑成——通常是换了 CARGO_TARGET_DIR 或改了包结构。
+if [[ ! -f "$ROOT/packaging/macos/AppIcon.icns" ]]; then
+  echo "❌ 没找到 packaging/macos/AppIcon.icns，build.rs 应该会生成它" >&2
+  exit 1
+fi
+
 echo "==> 组装 $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/target/release/$BIN_NAME" "$APP/Contents/MacOS/$BIN_NAME"
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/packaging/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # 临时签名（ad-hoc）：本机自用足够；分发给别人要换成 Developer ID。
 echo "==> codesign (ad-hoc)"
@@ -63,7 +71,16 @@ if [[ "${1:-}" == "--install" ]]; then
   mkdir -p "$(dirname "$PLIST")"
   cp "$ROOT/packaging/launchd/com.snipshot.daemon.plist" "$PLIST"
   launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
+  launchctl load "$PLIST" 2>/dev/null || true
+  # `launchctl load` 在非登录会话里会打印 "Load failed: 5" 却仍然返回 0，
+  # 所以只能回查状态判断到底有没有接管。
+  if launchctl print "gui/$(id -u)/com.snipshot.daemon" >/dev/null 2>&1; then
+    echo "==> LaunchAgent 已接管"
+  else
+    echo "⚠️  daemon 没能注册到 launchd（多见于非登录会话 / CI）。"
+    echo "    重新登录，或在终端里再执行一次本脚本即可。"
+    echo "    临时可用：另开一个终端跑 \`$BIN_NAME daemon\`"
+  fi
 
   # CLI 软链：二进制在 .app 里，不链一下 shell 就找不到 `snipshot`。
   # 选 /usr/local/bin 而不是 ~/.local/bin，是因为前者在所有 macOS 的默认 PATH 里。

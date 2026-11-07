@@ -18,8 +18,10 @@ pub mod espanso;
 pub mod handoff;
 pub mod index;
 pub mod ipc;
+pub mod mark;
 pub mod preview;
 pub mod search;
+pub mod tray;
 pub mod trigger;
 pub mod ui;
 pub mod usage;
@@ -63,6 +65,11 @@ pub fn run_daemon() {
         .run(move |cx| {
             gpui_kit::init(cx);
 
+            // 常驻工具不该占着 Dock 和 Cmd-Tab。Info.plist 里的 LSUIElement 只管
+            // 启动瞬间，gpui 会按自己的默认（Regular）覆盖回去，所以这里必须再
+            // 明确设一次 Accessory：不进 Dock，只在菜单栏留一个图标。
+            cx.set_activation_policy(gpui_kit::ActivationPolicy::Accessory);
+
             let state = cx.new(|cx| AppState::new(cx, index.clone()));
             cx.set_global(app::state::GlobalApp(state.clone()));
 
@@ -74,5 +81,11 @@ pub fn run_daemon() {
             trigger::tap::install(tx.clone(), trigger_config);
 
             app::scheduler::spawn(&mut cx.to_async(), state, rx, tx.clone());
+
+            // 菜单栏图标最后装：它要的 action handler 已经注册好了，
+            // 且失败了也不该拖垮 daemon（面板靠 `;;` 仍然可用）。
+            if let Err(err) = tray::install(cx, tx.clone()) {
+                log::error!("菜单栏图标创建失败：{err}");
+            }
         });
 }
