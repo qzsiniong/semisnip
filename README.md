@@ -31,7 +31,7 @@ git clone <repo> && cd snipshot
 ./scripts/bundle-macos.sh --install
 ```
 
-脚本会依次做：release 构建 → 组装 `Snipshot.app` → ad-hoc 签名 → 拷到 `/Applications` → 注册 LaunchAgent → 写入 `$ESPANSO_CONFIG/match/snipshot.yml`。
+脚本会依次做：release 构建 → 组装 `Snipshot.app` → ad-hoc 签名 → 拷到 `/Applications` → 注册 LaunchAgent → 写入 `$ESPANSO_CONFIG/match/snipshot.yml` → 建 CLI 软链 `/usr/local/bin/snipshot`。
 
 之后还有两步必须手动完成（系统不允许脚本代劳）：
 
@@ -45,6 +45,15 @@ snipshot doctor
 ```
 
 四项全绿即可使用。`doctor` 会检查 espanso 可执行文件、配置目录、片段索引、daemon 存活与辅助功能授权。
+
+> **`zsh: command not found: snipshot`** —— 说明软链没建上。二进制本体在 `.app` 里，`/Applications` 不在 PATH 上，手动补一条即可：
+>
+> ```bash
+> sudo ln -sf /Applications/Snipshot.app/Contents/MacOS/snipshot /usr/local/bin/snipshot
+> hash -r
+> ```
+>
+> 不想动 `/usr/local/bin`，也可以先 `alias snipshot=/Applications/Snipshot.app/Contents/MacOS/snipshot`。
 
 > ad-hoc 签名只够本机自用。要分发给别人，把 `scripts/bundle-macos.sh` 里的 `codesign --sign -` 换成 Developer ID。
 
@@ -115,6 +124,9 @@ snipshot daemon                     同上
 snipshot trigger [--origin O]       请求打开面板（origin: tap | espanso | manual）
 snipshot reload                     重建索引
 snipshot install                    写入 espanso 触发定义并打印后续步骤
+snipshot uninstall [--yes]          卸载（默认只演练，--purge 连配置一起删）
+snipshot config [子命令]             配置的查看与修改
+snipshot log [选项]                  看日志
 snipshot doctor                     体检
 snipshot type <text>                调试：合成字符输入
 snipshot key <esc|enter|up|down>    调试：合成命名按键
@@ -123,6 +135,50 @@ snipshot key <esc|enter|up|down>    调试：合成命名按键
 `trigger` 被 espanso 的 shell 变量同步调用，因此**成功时 stdout 必须为空**——espanso 会把 stdout 原样注入文档，多一个字节就是污染。所有错误都走 stderr。
 
 `type` / `key` 会向系统合成真实键盘事件，仅用于没有辅助功能权限时的冒烟测试。
+
+### `config`
+
+```bash
+snipshot config                      # 当前值，与默认值不同的项标 *
+snipshot config get trigger          # 取值（字符串不带引号，方便塞进脚本）
+snipshot config set max_results 12   # 改一个键，带类型与范围校验
+snipshot config unset max_results    # 恢复默认
+snipshot config reset                # 全部恢复默认
+snipshot config keys                 # 列出所有键与含义
+snipshot config edit                 # $EDITOR 打开，退出时自动校验 JSON
+snipshot config path                 # 配置文件路径
+```
+
+`set` 会先按默认值的类型解析（`true/false`、整数、小数、字符串），再做语义校验：`trigger` 必须能映射成物理键码（中文会直接报错），`max_results` 限 1–100，`panel_width/height` 限 200–2000。写入时先落临时文件再改名，daemon 不会读到半截 JSON。
+
+配置在 daemon 启动时读一次，改完它会打印 `launchctl kickstart` 的完整命令。
+
+### `log`
+
+```bash
+snipshot log                         # 最近 40 行
+snipshot log -n 200                  # 最近 200 行
+snipshot log -f                      # 跟随，Ctrl-C 退出
+snipshot log --grep 触发              # 只看包含关键词的行
+snipshot log --level warn            # 只看 warn 及以上
+snipshot log path                    # 日志路径
+snipshot log clear                   # 清空
+```
+
+因为 daemon 以 `.app` 启动时没有终端，日志文件是唯一的回溯手段。`--level` 读的是 `env_logger` 那行 `[时间 LEVEL target]` 里的级别；没有前缀的续行（栈回溯）一律放行，不会漏掉上下文。
+
+### `uninstall`
+
+默认**只演练**，把每一项和路径都列出来，加 `--yes` 才真删：
+
+```bash
+snipshot uninstall                   # 演练
+snipshot uninstall --yes             # 真删（保留配置与日志）
+snipshot uninstall --yes --purge     # 连配置、使用频率、日志一起删
+snipshot uninstall --yes --keep-app  # 只拆 LaunchAgent 与 espanso 定义，留 app
+```
+
+顺序是先 `launchctl bootout` 再删 app——launchd 的 `ProgramArguments` 指向 app 内部，反过来会触发一次失败重启。**任何情况下都不碰 espanso 的片段 YAML**，只删自己生成的那一个 `match/snipshot.yml`。完成后会提醒你 `espanso restart`。
 
 ## 架构
 
@@ -198,8 +254,9 @@ espanso 的 `filter_class` / `filter_exec` 这类 app-specific 规则目前**没
 
 先跑 `snipshot doctor`，再看日志：
 
-```
-~/Library/Application Support/snipshot/snipshot.log
+```bash
+snipshot log --level warn -n 50    # 只看警告与错误
+snipshot log -f                    # 复现问题时盯着
 ```
 
 | 现象 | 原因 | 处理 |
@@ -211,11 +268,14 @@ espanso 的 `filter_class` / `filter_exec` 这类 app-specific 规则目前**没
 | 片段 0 条 | 配置目录找错 | `espanso path config` 应返回目录；`espanso path base` 返回的是 `base.yml` **文件**，不能当目录用 |
 | 文档里多出一个 `;` | `erase` 与实际被吞的键数不一致 | 见下方「已知限制」第一条 |
 | 列表顺序奇怪 | `usage.json` 里的使用统计 | 删掉该文件即可重置 |
+| `doctor` 说「当前进程有授权，但 daemon 没有」 | TCC 按进程判：终端跑的命令继承终端授权，launchd 起的 daemon 是独立条目；ad-hoc 重签名后条目会失效 | 系统设置 → 隐私与安全性 → 辅助功能，删掉旧的 Snipshot 再重新添加（或重新勾选） |
+| 日志里每 10 秒一条「已有 daemon 在运行」 | 老版本抢 socket 失败时退出码为 1，launchd 的 `KeepAlive` 于是不停重启 | 已在 0.1.x 修掉（该情况改为退出码 0）；重装即可 |
+| 改完 `config` 没生效 | daemon 启动时只读一次配置 | 按提示 `launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon` |
 
 ## 开发
 
 ```bash
-cargo test                       # 37 项单测：打分、拼音、预览、协议、YAML 解析
+cargo test                       # 52 项单测：打分、拼音、预览、协议、YAML 解析、配置校验、日志过滤、卸载白名单
 cargo clippy --all-targets
 cargo fmt
 
@@ -231,7 +291,7 @@ RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同�
 
 ```bash
 ./scripts/bundle-macos.sh            # 只产出 target/Snipshot.app
-./scripts/bundle-macos.sh --install  # 安装到 /Applications 并注册 LaunchAgent
+./scripts/bundle-macos.sh --install  # 安装到 /Applications + LaunchAgent + CLI 软链
 ```
 
 ## 已知限制

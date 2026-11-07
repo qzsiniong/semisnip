@@ -39,6 +39,24 @@ pub fn ping() -> anyhow::Result<()> {
     )? {
         Response::Ok { .. } => Ok(()),
         Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("意外的响应：{other:?}")),
+    }
+}
+
+/// 问 daemon「你的 tap 装上了吗」。
+///
+/// 不能本地自查：TCC 授权按进程判，`doctor` 从终端跑会继承终端的授权，
+/// 而 launchd 起的 daemon 是另一份授权。这里问的是 daemon 的真实状态。
+pub fn status() -> anyhow::Result<bool> {
+    match call(
+        &Request::Status {
+            v: super::proto::PROTOCOL_VERSION,
+        },
+        CONNECT_TIMEOUT,
+    )? {
+        Response::Status { tap_ready, .. } => Ok(tap_ready),
+        Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("意外的响应：{other:?}")),
     }
 }
 
@@ -54,6 +72,7 @@ pub fn open(origin: super::proto::Origin, trigger: &str) -> anyhow::Result<()> {
     match call(&req, CONNECT_TIMEOUT) {
         Ok(Response::Ok { .. }) => return Ok(()),
         Ok(Response::Error { message, .. }) => return Err(anyhow::anyhow!(message)),
+        Ok(other) => return Err(anyhow::anyhow!("意外的响应：{other:?}")),
         Err(err) => log::debug!("首连失败，尝试拉起 daemon：{err}"),
     }
 

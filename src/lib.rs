@@ -37,9 +37,17 @@ pub fn run_daemon() {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
 
     // 单实例：socket 抢不到就说明已有 daemon 在跑，直接退出。
-    match ipc::server::serve(tx.clone()) {
+    // tap 状态由 daemon 自己回答（`doctor` 会问），这里只注入取值方式。
+    let tap_probe: ipc::server::TapProbe = std::sync::Arc::new(crate::trigger::tap::ready);
+    match ipc::server::serve(tx.clone(), tap_probe) {
         Ok(path) => log::info!("IPC 就绪：{}", path.display()),
-        Err(err) => {
+        // 关键：这种情况必须退出码 0。launchd 的 KeepAlive 只在「非正常退出」时重启，
+        // 退出码 1 会让它每 10 秒拉起一个新实例、再撞一次 socket、再写一行 ERROR。
+        Err(ipc::server::ServeError::AlreadyRunning) => {
+            log::info!("已有 daemon 在运行，本实例退出");
+            std::process::exit(0);
+        }
+        Err(ipc::server::ServeError::Io(err)) => {
             log::error!("IPC 启动失败：{err}");
             eprintln!("snipshot: {err}");
             std::process::exit(1);

@@ -32,6 +32,27 @@ codesign -dv "$APP" 2>&1 | sed 's/^/    /'
 
 echo "==> 完成：$APP"
 
+# 把 .app 里的二进制暴露成 PATH 上的 `snipshot`。
+# 已存在同名的普通文件时直接报错退出，不覆盖用户自己装的东西。
+link_cli() {
+  local target="/Applications/$APP_NAME.app/Contents/MacOS/$BIN_NAME"
+  local link="/usr/local/bin/$BIN_NAME"
+
+  if [[ ! -w "$(dirname "$link")" ]]; then
+    echo "==> 跳过 CLI 软链：$(dirname "$link") 不可写，请手动执行"
+    echo "    sudo ln -sf \"$target\" \"$link\""
+    return 0
+  fi
+
+  if [[ -e "$link" && ! -L "$link" ]]; then
+    echo "==> 跳过 CLI 软链：$link 已存在且不是软链（可能是你自己装的）"
+    return 0
+  fi
+
+  ln -sf "$target" "$link"
+  echo "==> CLI 软链：$link -> $target"
+}
+
 if [[ "${1:-}" == "--install" ]]; then
   echo "==> 安装到 /Applications"
   rm -rf "/Applications/$APP_NAME.app"
@@ -43,6 +64,11 @@ if [[ "${1:-}" == "--install" ]]; then
   cp "$ROOT/packaging/launchd/com.snipshot.daemon.plist" "$PLIST"
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
+
+  # CLI 软链：二进制在 .app 里，不链一下 shell 就找不到 `snipshot`。
+  # 选 /usr/local/bin 而不是 ~/.local/bin，是因为前者在所有 macOS 的默认 PATH 里。
+  # 放在 `install` 之前：`install` 会检查这条链接是否存在来决定要不要提示补链。
+  link_cli
 
   echo "==> 写入 espanso 触发定义"
   "/Applications/$APP_NAME.app/Contents/MacOS/$BIN_NAME" install

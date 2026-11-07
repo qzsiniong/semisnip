@@ -3,6 +3,10 @@
 //! 只有 `daemon` 会初始化 gpui；其余子命令必须是"秒退、不打印 stdout"的
 //! 轻量进程——`trigger` 会被 espanso 的 shell 变量同步调用。
 
+mod config_cmd;
+mod log_cmd;
+mod uninstall;
+
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
@@ -22,9 +26,14 @@ snipshot — espanso 的片段检索层
   snipshot trigger [--origin O]  请求打开面板（espanso 的 shell 变量会调它）
   snipshot reload                重建索引
   snipshot install               写入 espanso 触发定义并给出后续步骤
+  snipshot uninstall [--yes]     卸载：演练删什么，--yes 真删，--purge 连配置一起
+  snipshot config [子命令]        查看/修改配置（path get set unset reset keys edit）
+  snipshot log [选项]            看日志（-n 行数  -f 跟随  --grep 关键词  --level 级别）
   snipshot doctor                体检：espanso / 权限 / 索引 / daemon
   snipshot type <text>           调试：合成字符输入
   snipshot key <esc|enter|up|down>  调试：合成命名按键
+
+子命令的详细用法：snipshot <子命令> --help
 ";
 
 pub fn run() -> ExitCode {
@@ -55,6 +64,9 @@ pub fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
         "install" => install(),
+        "uninstall" => uninstall::run(&args[1..]),
+        "config" => config_cmd::run(&args[1..]),
+        "log" => log_cmd::run(&args[1..]),
         "doctor" => doctor(),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -134,6 +146,12 @@ fn install() -> ExitCode {
         config.trigger
     );
     println!("  3. 跑 `snipshot doctor` 确认四态正常");
+    // 二进制藏在 .app 里，没软链的话 shell 找不到命令，这一步经常被漏掉。
+    if !std::path::Path::new("/usr/local/bin/snipshot").exists() {
+        println!();
+        println!("提示：`snipshot` 还不在 PATH 上，补一条软链后命令才可用：");
+        println!("  sudo ln -sf {} /usr/local/bin/snipshot", exe.display());
+    }
     ExitCode::SUCCESS
 }
 
@@ -223,11 +241,31 @@ fn doctor() -> ExitCode {
         problems += 1;
     }
 
-    if crate::trigger::tap::accessibility_granted() {
-        println!("  辅助功能     ✅ 已授权（tap 路径可用）");
-    } else {
-        println!("  辅助功能     ⚠️  未授权：只能用 espanso shell 降级触发");
-        println!("              打开：系统设置 → 隐私与安全性 → 辅助功能");
+    // TCC 授权是按进程判的：从终端跑 `doctor` 会继承终端的授权，
+    // 而 launchd 起的 daemon 是另一份。所以这里以 daemon 自报的状态为准。
+    let daemon_tap = if alive { client::status().ok() } else { None };
+    let local_tap = crate::trigger::tap::accessibility_granted();
+    let mut degraded = false;
+    match daemon_tap {
+        Some(true) => println!("  辅助功能     ✅ 已授权（tap 路径可用）"),
+        Some(false) => {
+            degraded = true;
+            println!("  辅助功能     ⚠️  未授权：daemon 正在走 espanso 降级触发");
+            if local_tap {
+                // 最迷惑人的一种：终端里测着是好的，daemon 却没有权限。
+                println!("               （当前进程有授权，但 daemon 没有——两者是独立条目）");
+            }
+            println!("              打开：系统设置 → 隐私与安全性 → 辅助功能");
+        }
+        None => {
+            if local_tap {
+                println!("  辅助功能     ✅ 本进程已授权（daemon 未运行，无法确认它的状态）");
+            } else {
+                degraded = true;
+                println!("  辅助功能     ⚠️  未授权：只能用 espanso shell 降级触发");
+                println!("              打开：系统设置 → 隐私与安全性 → 辅助功能");
+            }
+        }
     }
 
     let config = Config::load();
@@ -236,11 +274,22 @@ fn doctor() -> ExitCode {
         config.trigger, config.focus_mode, config.max_results
     );
 
-    if problems == 0 {
+    if problems == 0 && !degraded {
         println!("\n全部正常。");
+        ExitCode::SUCCESS
+    } else if problems == 0 {
+        // 能跑，但不是最佳路径：`;;` 要靠 espanso 的 shell 变量绕一圈，
+        // 多一次进程启动，也没有「吞键」带来的零残留。
+        println!(
+            "\n可用，但处于降级模式：授权辅助功能后 `{}` 才由 tap 直接接管。",
+            Config::load().trigger
+        );
         ExitCode::SUCCESS
     } else {
         println!("\n有 {problems} 项需要处理。");
+        if degraded {
+            println!("另有 1 项降级（辅助功能未授权）。");
+        }
         ExitCode::FAILURE
     }
 }

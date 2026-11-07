@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,13 +46,30 @@ pub enum Request {
         #[serde(default = "version")]
         v: u8,
     },
+    /// 打听 daemon 自己的状态。TCC 授权是「按进程」判的：同一个二进制，
+    /// 从终端跑是继承终端的授权，从 launchd 起则要单独授权。所以
+    /// `doctor` 不能只查自己，必须问 daemon。
+    Status {
+        #[serde(default = "version")]
+        v: u8,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Ok { v: u8 },
-    Error { v: u8, message: String },
+    Ok {
+        v: u8,
+    },
+    Error {
+        v: u8,
+        message: String,
+    },
+    Status {
+        v: u8,
+        /// daemon 的键盘 tap 是否真的可用。
+        tap_ready: bool,
+    },
 }
 
 impl Response {
@@ -90,8 +107,26 @@ mod tests {
     }
 
     #[test]
+    fn status_roundtrip_keeps_tap_flag() {
+        let response = Response::Status {
+            v: PROTOCOL_VERSION,
+            tap_ready: true,
+        };
+        let raw = serde_json::to_string(&response).unwrap();
+        assert!(raw.contains("\"status\":\"status\""));
+        let back: Response = serde_json::from_str(&raw).unwrap();
+        assert!(matches!(
+            back,
+            Response::Status {
+                tap_ready: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn open_accepts_missing_optional_fields() {
         let req: Request = serde_json::from_str(r#"{"op":"open"}"#).unwrap();
-        assert!(matches!(req, Request::Open { v: 1, .. }));
+        assert!(matches!(req, Request::Open { v, .. } if v == PROTOCOL_VERSION));
     }
 }
