@@ -71,6 +71,10 @@ pub fn run_daemon() {
             // 明确设一次 Accessory：不进 Dock，只在菜单栏留一个图标。
             cx.set_activation_policy(gpui_kit::ActivationPolicy::Accessory);
 
+            // 窗口（设置 / 引导）要能向 UI 线程投事件，但拿不到 scheduler 那条
+            // `Sender`；放进全局，任何 `&mut App` 都能取一份。
+            cx.set_global(app::event::GlobalTx(tx.clone()));
+
             let state = cx.new(|cx| AppState::new(cx, index.clone()));
             cx.set_global(app::state::GlobalApp(state.clone()));
 
@@ -87,6 +91,15 @@ pub fn run_daemon() {
             // 且失败了也不该拖垮 daemon（面板靠 `;;` 仍然可用）。
             if let Err(err) = tray::install(cx, tx.clone()) {
                 log::error!("菜单栏图标创建失败：{err}");
+            }
+
+            // 首次运行：`onboarded` 还是 false（配置文件可能都还不存在）就弹引导。
+            // 放在最后，是因为引导窗里的「体检」要读索引快照——索引是异步建的，
+            // 这里读到的可能就是空快照；空也没关系，那一步会提示"没读到片段"。
+            if !config.onboarded {
+                if let Err(err) = ui::onboarding::open(cx) {
+                    log::warn!("首次引导打开失败：{err}");
+                }
             }
         });
 }

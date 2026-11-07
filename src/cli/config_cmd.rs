@@ -40,6 +40,10 @@ const FIELDS: &[(&str, &str)] = &[
     ),
     ("show_detail", "是否显示右侧详情区"),
     ("allow_paste_fallback", "match exec 失败时用剪贴板粘贴兜底"),
+    (
+        "onboarded",
+        "是否已看过首次引导（true 后 daemon 启动不再弹引导窗）",
+    ),
 ];
 
 #[derive(Debug, Subcommand)]

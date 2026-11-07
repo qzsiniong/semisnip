@@ -18,9 +18,10 @@
 ## 长这样
 
 ```yaml
-# semisnip 配置。daemon 只在启动时读一次，改完执行：
+# semisnip 配置。手改只在 daemon 启动时读一次，改完执行：
 #   semisnip config set <key> <value>              # 推荐：带类型与范围校验
 #   launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
+# 菜单栏 →「偏好设置…」里改会立即生效，不需要重启。
 # 改坏了也不至于起不来：解析失败时 daemon 会用默认值，并把原因写进日志。
 # yaml-language-server: $schema=./config.schema.json
 trigger: ;;
@@ -33,6 +34,7 @@ post_exec_delay_ms: 12
 preview_clipboard: false
 show_detail: true
 allow_paste_fallback: true
+onboarded: false
 ```
 
 只写想改的键也行——其余字段按默认值补（`#[serde(default)]`）。空文件、只有注释的文件同样按默认值处理，删光内容不会让 daemon 起不来。
@@ -75,6 +77,9 @@ semisnip config schema
 | `preview_clipboard` | `false` | 详情区是否显示剪贴板全文；`false` 时只显示字符数 |
 | `show_detail` | `true` | 是否显示右侧详情区 |
 | `allow_paste_fallback` | `true` | `match exec` 失败时用「安全渲染 + 剪贴板粘贴」兜底 |
+| `onboarded` | `false` | 不是偏好是状态：`false` 时 daemon 启动会弹引导窗，走完置 `true` |
+
+除了 `onboarded`，其余都是"用户偏好"，也都能在菜单栏的 **偏好设置…** 里改（改完立即生效，见 [设置与首次引导](settings.md)）。
 
 ## 怎么改
 

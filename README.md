@@ -37,7 +37,9 @@ git clone <repo> && cd semisnip
 semisnip doctor
 ```
 
-看到 `全部正常。` 即可使用。安装脚本的每一步、签名与权限问题、`command not found` 的补救，见 **[安装](docs/install.md)**。
+看到 `全部正常。` 即可使用。第一次启动会弹一个四步的引导页（体检 + 用法 + 收尾），看完就记住了；菜单栏 →「使用引导…」可以再看一次。
+
+安装脚本的每一步、签名与权限问题、`command not found` 的补救，见 **[安装](docs/install.md)**。
 
 ## 使用
 
@@ -51,6 +53,8 @@ semisnip doctor
 | `Cmd` / `Ctrl` + 任意键 | 放行给系统并关闭面板，不吞系统快捷键 |
 
 打 `date` 就能命中 `:date`，打 `rq` 能命中「日期」（拼音索引）。过滤规则、排序权重、三种唤起方式见 **[使用](docs/usage.md)**。
+
+偏好都在菜单栏的 **偏好设置…** 里改：触发键、面板尺寸、详情栏、粘贴兜底。改完**立即生效**，没有保存按钮；手改 `config.yml` 才需要重启。见 **[设置与首次引导](docs/settings.md)**。
 
 ## 命令
 
@@ -110,6 +114,7 @@ flowchart TB
 | [配置](docs/configuration.md) | `config.yml` 全部字段、schema 补全、`config` 子命令、本地文件清单 |
 | [命令行](docs/cli.md) | 命令总表，`match` / `completion` / `log` / `uninstall` 细节 |
 | [架构](docs/architecture.md) | 数据流、模块边界、触发与焦点、回传顺序、数据源、预览安全边界 |
+| [设置与首次引导](docs/settings.md) | 设置窗口的四个页签、改动如何立即生效、四步引导与 `onboarded` |
 | [菜单栏与图标](docs/tray.md) | 为什么不在 Dock、菜单项、图标生成方式、图标没出现怎么查 |
 | [故障排查](docs/troubleshooting.md) | 现象对照表、已知限制 |
 | [开发](docs/development.md) | 测试、本地调试、打包、改动约定 |

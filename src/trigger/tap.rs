@@ -96,6 +96,17 @@ pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
+/// 运行期换触发键。
+///
+/// 设置窗口改完 `trigger` 之后调它，不必重启 daemon。**别改成再调一次
+/// [`install`]**：`SHARED` 是 `OnceLock`，第二次安装只会打一行 warn 然后
+/// 返回，看着没报错，实际上状态机还是旧的。
+pub fn set_trigger(config: TriggerConfig) {
+    if let Some(shared) = SHARED.get() {
+        shared.set_trigger(config);
+    }
+}
+
 /// 预告：接下来会有 `count` 个由 espanso 合成的退格，别让它们落到目标 App。
 ///
 /// `espanso match exec` 会按 trigger 全长回删字符（引擎里的 TriggerCompensation）。

@@ -7,7 +7,6 @@
 //! 图标用**模板图**（`template(true)`）：macOS 只取 alpha 当遮罩再按当前外观
 //! 上色，浅色菜单栏上自动变黑、深色上自动变白，不用我们自己判断外观。
 
-use std::process::Command;
 use std::sync::mpsc::Sender;
 
 use gpui_kit::{App, MenuItem};
@@ -20,6 +19,8 @@ gpui_kit::actions!(
     [
         OpenPanel,
         ReloadIndex,
+        OpenSettings,
+        OpenGuide,
         OpenConfig,
         OpenMatchFile,
         OpenLog,
@@ -57,6 +58,9 @@ fn menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("打开片段面板", OpenPanel),
         MenuItem::separator(),
+        MenuItem::action("偏好设置…", OpenSettings),
+        MenuItem::action("使用引导…", OpenGuide),
+        MenuItem::separator(),
         MenuItem::action("重建索引", ReloadIndex),
         MenuItem::separator(),
         MenuItem::action("打开配置…", OpenConfig),
@@ -89,36 +93,32 @@ fn register_actions(cx: &mut App, tx: Sender<Event>) {
         let _ = quit.send(Event::Shutdown);
     });
 
+    // 两个窗口直接开，不走事件通道：它们的生命周期与面板无关，
+    // 也不需要 tap 的 `panel_open` 状态。
+    cx.on_action(|_: &OpenSettings, cx: &mut App| {
+        if let Err(err) = crate::ui::settings::open(cx) {
+            log::error!("打开设置失败：{err}");
+        }
+    });
+    cx.on_action(|_: &OpenGuide, cx: &mut App| {
+        if let Err(err) = crate::ui::onboarding::open(cx) {
+            log::error!("打开引导失败：{err}");
+        }
+    });
+
     // 这三个只是"用系统默认程序打开文件"，不值得绕一圈事件循环。
     cx.on_action(|_: &OpenConfig, _: &mut App| {
-        reveal(crate::paths::config_path(), crate::paths::config_dir());
+        crate::ui::reveal(crate::paths::config_path(), crate::paths::config_dir());
     });
     cx.on_action(|_: &OpenMatchFile, _: &mut App| {
-        reveal(
+        crate::ui::reveal(
             crate::paths::espanso_match_file(),
             crate::paths::espanso_match_dir(),
         );
     });
     cx.on_action(|_: &OpenLog, _: &mut App| {
-        reveal(crate::paths::log_path(), crate::paths::config_dir());
+        crate::ui::reveal(crate::paths::log_path(), crate::paths::config_dir());
     });
-}
-
-/// 文件不存在时退而打开所在目录：菜单点下去毫无反应是最难受的。
-fn reveal(target: std::path::PathBuf, fallback_dir: std::path::PathBuf) {
-    let path = if target.exists() {
-        target
-    } else {
-        log::info!(
-            "{} 不存在，改开目录 {}",
-            target.display(),
-            fallback_dir.display()
-        );
-        fallback_dir
-    };
-    if let Err(err) = Command::new("open").arg(&path).spawn() {
-        log::error!("打开 {} 失败：{err}", path.display());
-    }
 }
 
 /// 菜单栏里占的高度（pt）与 retina 倍数。宽度不写死，按标记的宽高比推。
@@ -177,15 +177,15 @@ mod tests {
     fn menu_entries_are_well_formed() {
         // 菜单里每一项都得是已定义的动作，否则点下去没反应
         let items = menu_items();
-        assert_eq!(items.len(), 9);
+        assert_eq!(items.len(), 12);
         assert!(matches!(items[0], MenuItem::Action { .. }));
-        // 分组线：打开 | 重建 | 三个"打开…" | 退出
-        for index in [1, 3, 7] {
+        // 分组线：打开 | 两个窗口 | 重建 | 三个"打开…" | 退出
+        for index in [1, 4, 6, 10] {
             assert!(
                 matches!(items[index], MenuItem::Separator),
                 "第 {index} 项应是分隔线"
             );
         }
-        assert!(matches!(items[8], MenuItem::Action { .. }));
+        assert!(matches!(items[11], MenuItem::Action { .. }));
     }
 }

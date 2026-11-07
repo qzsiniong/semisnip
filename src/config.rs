@@ -21,11 +21,15 @@ use crate::paths::{SCHEMA_FILE, config_dir, config_path};
 /// 编译期嵌入：装好的 app 自带 schema，不依赖仓库目录，也不会和代码漂移。
 const SCHEMA: &str = include_str!("../assets/config.schema.json");
 
-/// 写在 YAML 开头的抬头。改配置的人第一眼就该看到「改完要重启」。
+/// 写在 YAML 开头的抬头。
+///
+/// 手改的人第一眼要看到「改完要重启」；而菜单栏里的设置窗口是**立即生效**的，
+/// 两条路的行为不一样，所以两句都得写——不然用户会以为设置窗口也需要重启。
 const HEADER: &str = "\
-# semisnip 配置。daemon 只在启动时读一次，改完执行：
+# semisnip 配置。手改只在 daemon 启动时读一次，改完执行：
 #   semisnip config set <key> <value>              # 推荐：带类型与范围校验
 #   launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
+# 菜单栏 →「偏好设置…」里改会立即生效，不需要重启。
 # 改坏了也不至于起不来：解析失败时 daemon 会用默认值，并把原因写进日志。
 # yaml-language-server: $schema=./config.schema.json
 ";
@@ -58,6 +62,16 @@ pub struct Config {
     pub show_detail: bool,
     /// `match exec` 失败时用剪贴板粘贴兜底（需要辅助功能权限）。
     pub allow_paste_fallback: bool,
+    /// 是否已经看过首次引导。
+    ///
+    /// 这是唯一一个**不是用户偏好**的字段：它记的是「这台机器上的人已经知道
+    /// 这个程序怎么用了」。daemon 启动时读它决定要不要弹引导窗——
+    /// 第一次启动（配置文件都还不存在）时它是 `false`，走完引导置 `true`。
+    ///
+    /// 放在配置里而不是单独的标记文件，是因为它天然跟着配置走：用户把
+    /// `config.yml` 复制到另一台机器，那边也不会再被引导一次；删掉配置
+    /// 重来，就等于「重新开始」，行为符合直觉。
+    pub onboarded: bool,
 }
 
 impl Default for Config {
@@ -73,6 +87,7 @@ impl Default for Config {
             preview_clipboard: false,
             show_detail: true,
             allow_paste_fallback: true,
+            onboarded: false,
         }
     }
 }

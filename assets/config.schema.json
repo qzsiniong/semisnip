@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "semisnip 配置",
-  "description": "~/Library/Application Support/semisnip/config.yml。daemon 只在启动时读一次，改完要重启才生效。用 `semisnip config set` 修改会自动校验。",
+  "description": "~/Library/Application Support/semisnip/config.yml。手改之后要重启 daemon 才生效；在「偏好设置」窗口里改则立即生效。用 `semisnip config set` 修改会自动校验。",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -79,6 +79,12 @@
       "description": "espanso match exec 失败时，用「安全渲染 + 剪贴板粘贴」兜底。需要辅助功能权限；会覆盖剪贴板。",
       "type": "boolean",
       "default": true
+    },
+    "onboarded": {
+      "title": "已看过首次引导",
+      "description": "不是偏好，是状态：false 时 daemon 启动会弹一次引导窗，走完置 true。菜单栏「使用引导…」可以重新打开它。",
+      "type": "boolean",
+      "default": false
     }
   }
 }

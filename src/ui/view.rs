@@ -166,7 +166,12 @@ impl Render for AppState {
                             })
                             .children(rows),
                     )
-                    .child(div().w(px(DETAIL_W)).child(detail)),
+                    // 详情栏可以在设置里关掉：关掉后列表占满整个面板，
+                    // 适合只想要"快速挑一条"的人。`show_detail` 只影响这一列，
+                    // 预览本身仍然在后台算（`fallback_text` 要用它）。
+                    .when(self.config.show_detail, |this| {
+                        this.child(div().w(px(DETAIL_W)).child(detail))
+                    }),
             )
             .child(
                 // 状态条

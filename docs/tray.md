@@ -15,6 +15,9 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 ```
 打开片段面板        ← 和 `;;` 等价，只是不用切回输入框
 ──────────
+偏好设置…           ← 普通窗口：触发键、面板尺寸、详情栏、粘贴兜底
+使用引导…           ← 重新走一遍四步引导（会把 onboarded 置回 false）
+──────────
 重建索引
 ──────────
 打开配置…           ← 用系统默认程序打开 config.yml
@@ -24,7 +27,9 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 退出 semisnip       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
 ```
 
-菜单项不是直接调系统 API，而是发 GPUI action 回到 scheduler 的事件通道——和 `semisnip trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。
+菜单项不是直接调系统 API：面板与索引相关的那几项发 GPUI action 回到 scheduler 的事件通道——和 `semisnip trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。两个窗口（设置 / 引导）反过来是直接开的：它们的生命周期和面板无关，也不该被 `panel_open` 状态影响。
+
+窗口本身（版式、字段、四步流程）见 **[设置与首次引导](settings.md)**。
 
 ## 标记
 

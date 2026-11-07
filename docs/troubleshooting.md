@@ -22,6 +22,9 @@ semisnip log -f               # 复现问题时盯着
 | 日志里每 10 秒一条「已有 daemon 在运行」 | 老版本抢 socket 失败时退出码为 1，launchd 的 `KeepAlive` 于是不停重启 | 已在 0.1.x 修掉（该情况改为退出码 0）；重装即可 |
 | 改完 `config` 没生效 | daemon 启动时只读一次配置 | `launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon` |
 | 配置好像被忽略了 | YAML 写坏、类型不对，`Config::load` 退回默认值 | `semisnip log -l warn` 里找「配置解析失败」，报错带行列号；或 `semisnip config edit` 退出时会校验 |
+| 设置里改了触发键，`;;` 还是旧的 | espanso 的降级定义还是旧键（tap 正常时用不到它，但授权失效后会） | 跑一次 `semisnip install`，再 `espanso restart` |
+| 设置里改了，面板没变 | 面板用的是打开那一刻的配置；尺寸类改动下次打开才生效 | 触发键/条数是立即生效的，尺寸要关掉面板重开 |
+| 改了辅助功能还是显示未授权 | 体检是快照，而且 tap 只在 daemon 启动时装 | 点引导页的「重新检查」，或重启 daemon 后再看 |
 | 菜单栏看不到图标 | 菜单栏排满，被折叠进溢出区 | 见 [菜单栏与图标 · 图标没出现？](tray.md#图标没出现) |
 
 ## 已知限制

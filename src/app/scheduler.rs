@@ -79,6 +79,15 @@ fn handle(cx: &mut App, state: &Entity<AppState>, tx: &Sender<Event>, event: Eve
             });
         }
 
+        // 设置窗口落盘之后投过来的：把新配置换进面板，并让触发状态机跟着换。
+        // 面板没开时也要处理——trigger 是全局的，下一次 `;;` 就得按新键码走。
+        Event::ConfigChanged => {
+            state.update(cx, |state, cx| {
+                state.reload_config();
+                cx.notify();
+            });
+        }
+
         Event::Reload => {
             let index = state.read(cx).index.clone();
             index.reload_async(tx.clone());
