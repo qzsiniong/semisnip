@@ -34,6 +34,19 @@ git clone <repo> && cd semisnip
 
 不带 `--install` 时只产出 `target/Semisnip.app`，不碰系统里的任何东西。要出通用二进制或 dmg/zip，加 `--universal` / `--dist`，见 [发版](release.md)。
 
+## 双击图标 = 启动
+
+装上之后 `Semisnip.app` 可以当启动开关用（Finder 里双击，或 `open -a Semisnip`）：
+
+| 当前状态 | 双击的结果 |
+|---|---|
+| 没有 daemon 在跑 | 自己起一个，菜单栏出现图标；首次运行还会弹引导页 |
+| 已有 daemon 在跑 | 把片段面板叫出来（双击总得有看得见的反应） |
+
+命令行的行为没变：终端里裸敲 `semisnip` 仍然只打印帮助——一个会抢键盘的常驻进程不该是一条裸命令的默认后果。
+
+双击启动**不会开机自启**：那只由 `--install` 写的 LaunchAgent 负责。所以从菜单栏点过「退出 semisnip」之后，双击是把它叫回来的正路（launchd 见退出码 0 就不再拉起，见 [菜单栏](tray.md)）。
+
 ## 之后必须手动做两步
 
 系统不允许脚本代劳：

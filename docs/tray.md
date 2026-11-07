@@ -25,6 +25,7 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 打开日志…
 ──────────
 退出 semisnip       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
+                    （要再起来：Finder 里双击 Semisnip.app）
 ```
 
 第一项**随面板状态变**：面板开着就变成「关闭片段面板」。这不是装饰——面板是 `NonactivatingPanel`，收起来只有两条路：键盘（CGEventTap 转发的 `Esc`）和鼠标。没有「辅助功能」权限时 tap 根本装不上，面板一个按键都收不到；那时从菜单栏原路点「关闭」是唯一不依赖权限的出口。菜单文案按**窗口句柄**判断（不是 `state.open`），开合之后各刷一次，所以不会出现「写着打开、点下去没反应」。

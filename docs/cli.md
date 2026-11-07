@@ -1,6 +1,9 @@
 # 命令行
 
-`semisnip` 不带参数时**只打印帮助**——daemon 是常驻进程，会抢键盘、要授权，不该是一条裸命令的默认后果。daemon 交给 LaunchAgent 管。
+`semisnip` 不带参数时按**谁把它拉起来的**分工，两种来源的观感完全不同：
+
+- **终端里裸敲**：只打印帮助。daemon 是常驻进程，会抢键盘、要授权，不该是一条裸命令的默认后果；它由 LaunchAgent 管。
+- **Finder 双击 `Semisnip.app`（或 `open -a Semisnip`）**：这就是"我要用这个 app"，于是起 daemon；已经有实例在跑就把片段面板叫出来。判断依据是 LaunchServices 注入的 `__CFBundleIdentifier` 是不是 `com.semisnip.app`（终端里跑继承的是终端自己的 id），和参数无关——两种情况下参数都是空的。
 
 ```
 semisnip                            打印帮助（不会启动任何东西）

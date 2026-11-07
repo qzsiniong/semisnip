@@ -28,6 +28,11 @@ pub const BIN_NAME: &str = "semisnip";
 pub const APP_NAME: &str = "Semisnip";
 /// LaunchAgent 的 label。改它等于换一个开机自启项。
 pub const LABEL: &str = "com.semisnip.daemon";
+/// bundle id，必须与 `packaging/macos/Info.plist` 的 `CFBundleIdentifier` 一致。
+///
+/// 只用来回答一个问题：当前进程是不是由 LaunchServices（Finder 双击）拉起来的
+/// ——那种情况下启动参数里没有子命令，`__CFBundleIdentifier` 会是这个值。
+pub const BUNDLE_ID: &str = "com.semisnip.app";
 
 pub const CONFIG_FILE: &str = "config.yml";
 /// 与配置同目录的 schema，供 `$schema=./config.schema.json` 解析。

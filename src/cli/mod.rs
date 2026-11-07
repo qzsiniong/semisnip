@@ -3,8 +3,12 @@
 //! 只有 `daemon` 会初始化 gpui；其余子命令必须是"秒退、不打印 stdout"的
 //! 轻量进程——`trigger` 会被 espanso 的 shell 变量同步调用。
 //!
-//! 不带子命令时**只打印帮助**，不再默默起 daemon：一个会常驻、会抢键盘的
-//! 进程不该是 `semisnip` 的默认动作。daemon 由 LaunchAgent 负责拉起。
+//! 不带子命令时分两种情况，靠"谁把进程拉起来的"区分（见 [`launched_from_bundle`]）：
+//!
+//! - **终端里裸敲 `semisnip`**：只打印帮助。一个会常驻、会抢键盘的进程不该是
+//!   一条裸命令的默认后果。
+//! - **Finder 双击 / `open -a Semisnip`**：这就是"我要用这个 app"，所以起
+//!   daemon（已有实例时把面板叫出来）。否则双击的观感是"图标闪一下，什么都没发生"。
 
 mod completion;
 mod config_cmd;
@@ -126,6 +130,11 @@ impl From<OriginArg> for Origin {
 /// - 其余命令写 stdout 是给人看的，错误写 stderr。
 pub fn run() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // 必须抢在 clap 前面：`arg_required_else_help` 会把"没有参数"当成"想看看
+    // 怎么用"，而 Finder 双击恰恰也是"没有参数"。两者的区别不在参数，在启动来源。
+    if launched_from_bundle(args.len(), bundle_id_env().as_deref()) {
+        return launch_from_bundle();
+    }
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(err) => return report(err),
@@ -162,6 +171,52 @@ pub fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+/// 读 LaunchServices 注入的 bundle id。
+///
+/// `__CFBundleIdentifier` 是 launchd 给"以某个 app 身份运行"的进程打的标记：
+/// 从 Finder 双击我们的包时是 `com.semisnip.app`；从终端裸跑时是终端自己的 id
+/// （iTerm2 是 `com.googlecode.iterm2`，等等），于是两种来源自然分开了。
+/// 拿不到（老系统、非 LS 启动）就当 CLI 处理——宁可打印帮助，也不要意外起一个常驻进程。
+fn bundle_id_env() -> Option<String> {
+    std::env::var("__CFBundleIdentifier").ok()
+}
+
+/// 判断"这次是双击 app 启动的"，而不是终端里敲的命令。
+///
+/// 参数必须为空：带子命令时永远是 CLI（LaunchAgent 的 `daemon`、espanso 的
+/// `trigger` 都是这条路）。bundle id 必须是我们自己：终端里跑的进程会继承
+/// 终端的 id。
+///
+/// 抽成纯函数只为了能测：真实环境里改不了自己的父进程，也改不了 launchd 注入
+/// 的变量。
+fn launched_from_bundle(argc: usize, bundle_id: Option<&str>) -> bool {
+    argc <= 1 && bundle_id == Some(paths::BUNDLE_ID)
+}
+
+/// 双击启动时的默认动作。
+///
+/// 分成两种情况，因为用户要的东西不一样：
+///
+/// - daemon 没在跑：自己当 daemon（菜单栏出现图标；首次运行还会弹引导页）。
+///   这条路不经过 launchd，所以**不会开机自启**——那是 `--install` 里
+///   LaunchAgent 的职责。
+/// - daemon 已经在跑：把面板叫出来。这是唯一能让人看见"它活着"的反馈；
+///   默默退出会和"双击没反应"一模一样。
+fn launch_from_bundle() -> ExitCode {
+    // `ping` 而不是 `status`：只关心有没有活着的实例，不关心它的 tap 状态。
+    if client::ping().is_ok() {
+        let trigger = Config::load().trigger;
+        match client::open(Origin::Manual, &trigger) {
+            Ok(()) => return ExitCode::SUCCESS,
+            // 叫不出面板就退化成"自己起一个"：那会撞上单实例检查并以 0 退出，
+            // 至少不会留下半启动的状态。
+            Err(err) => log::debug!("已有 daemon 但叫不出面板：{err}"),
+        }
+    }
+    crate::run_daemon();
+    ExitCode::SUCCESS
 }
 
 /// 把 clap 的错误转成退出码。
@@ -495,13 +550,24 @@ mod tests {
 
     #[test]
     fn bare_invocation_asks_for_help_instead_of_daemon() {
-        // 默认动作必须是"解释自己"，而不是偷偷起一个常驻进程。
+        // 终端里裸敲：默认动作必须是"解释自己"，而不是偷偷起一个常驻进程。
         let err = Cli::try_parse_from(["semisnip"]).unwrap_err();
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
         assert_eq!(classify(err.kind()), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn finder_launch_is_told_apart_from_a_bare_terminal_command() {
+        // 唯一的区别是 LaunchServices 注入的 bundle id：双击 app 时是我们自己，
+        // 终端里跑时是终端自己的。
+        assert!(launched_from_bundle(1, Some(paths::BUNDLE_ID)));
+        assert!(!launched_from_bundle(1, Some("com.googlecode.iterm2")));
+        assert!(!launched_from_bundle(1, None));
+        // 带子命令的永远是 CLI：LaunchAgent 的 `daemon`、espanso 的 `trigger`。
+        assert!(!launched_from_bundle(2, Some(paths::BUNDLE_ID)));
     }
 
     #[test]
