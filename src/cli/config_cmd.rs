@@ -1,14 +1,16 @@
-//! `snipshot config`：查看与修改 `config.json`。
+//! `snipshot config`：查看与修改 `config.yml`。
 //!
 //! 只碰 snipshot 自己的偏好，**不碰** espanso 的 YAML——片段永远归 espanso 管。
-//! 所有写入都走「读旧 JSON → 改一个键 → 反序列化校验 → 原子落盘」，
+//! 所有写入都走「读旧文件 → 改一个键 → 反序列化校验 → 原子落盘」，
 //! 保证手改坏了会被发现，而不是悄悄用默认值跑起来。
+//!
+//! 写回时会**整份重排**：YAML 注释除文件头外会丢。要保留注释就用
+//! `config edit` 手改，`set` 是给「确定只改一个值」的场景用的。
 
-use std::io::Write;
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use serde_json::{Value, json};
+use serde_yaml::{Mapping, Value};
 
 use crate::config::{self, Config};
 use crate::trigger::machine::TriggerConfig;
@@ -45,6 +47,8 @@ pub enum ConfigCmd {
     Show,
     /// 打印配置文件路径
     Path,
+    /// 打印 schema 路径（编辑器据此补全）
+    Schema,
     /// 读取单个键
     Get {
         /// 键名，`snipshot config keys` 查看全部
@@ -79,6 +83,13 @@ pub fn run(cmd: Option<ConfigCmd>) -> ExitCode {
             println!("{}", config::config_path().display());
             ExitCode::SUCCESS
         }
+        ConfigCmd::Schema => match config::ensure_schema() {
+            Ok(path) => {
+                println!("{}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(&format!("schema 写入失败：{err}")),
+        },
         ConfigCmd::Get { key } => get(&key),
         ConfigCmd::Set { key, value } => set(&key, &value),
         ConfigCmd::Unset { key } => unset(&key),
@@ -100,6 +111,9 @@ fn fail(message: &str) -> ExitCode {
 
 fn show() -> ExitCode {
     let path = config::config_path();
+    // 先 load：它可能顺手把旧的 config.json 迁移成 config.yml，
+    // 之后再判断「文件不存在」才不会自相矛盾。
+    let effective = serde_yaml::to_value(Config::load()).unwrap_or(Value::Null);
     let exists = path.exists();
     println!(
         "配置文件  {}{}",
@@ -111,17 +125,16 @@ fn show() -> ExitCode {
         }
     );
 
-    let effective = serde_json::to_value(Config::load()).unwrap_or(Value::Null);
-    let default = serde_json::to_value(Config::default()).unwrap_or(Value::Null);
+    let default = serde_yaml::to_value(Config::default()).unwrap_or(Value::Null);
 
     let mut changed = Vec::new();
     for (key, _) in FIELDS {
         let value = effective.get(*key).cloned().unwrap_or(Value::Null);
-        let same = default.get(*key) == Some(&value);
+        let same = same_value(default.get(*key), &value);
         if !same {
             changed.push(*key);
         }
-        println!("  {key:<22} = {}{}", value, if same { "" } else { "   *" });
+        println!("  {key:<22} = {}{}", plain(&value), if same { "" } else { "   *" });
     }
     if !changed.is_empty() {
         println!("\n  * = 与默认值不同");
@@ -129,22 +142,20 @@ fn show() -> ExitCode {
 
     // 旧版本残留的键：反序列化时会丢掉，落盘即消失，先说一声。
     if let Some(raw) = read_file() {
-        let unknown: Vec<&String> = raw
-            .as_object()
+        let unknown: Vec<String> = raw
+            .as_mapping()
             .map(|map| {
                 map.keys()
-                    .filter(|k| !FIELDS.iter().any(|(known, _)| known == &k.as_str()))
+                    .filter_map(|k| k.as_str())
+                    .filter(|k| !FIELDS.iter().any(|(known, _)| known == k))
+                    .map(str::to_string)
                     .collect()
             })
             .unwrap_or_default();
         if !unknown.is_empty() {
             println!(
                 "\n  ⚠️  未知键（会被忽略，下次写入时清除）：{}",
-                unknown
-                    .iter()
-                    .map(|k| k.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                unknown.join(", ")
             );
         }
     }
@@ -157,7 +168,7 @@ fn get(key: &str) -> ExitCode {
     if let Err(err) = known_key(key) {
         return fail(&err);
     }
-    let value = serde_json::to_value(Config::load()).unwrap_or(Value::Null);
+    let value = serde_yaml::to_value(Config::load()).unwrap_or(Value::Null);
     println!("{}", plain(value.get(key).unwrap_or(&Value::Null)));
     ExitCode::SUCCESS
 }
@@ -179,14 +190,16 @@ fn set(key: &str, rest: &[String]) -> ExitCode {
         Err(err) => return fail(&err),
     };
 
-    let mut root = read_file().unwrap_or_else(|| json!({}));
-    if !root.is_object() {
-        root = json!({});
+    let mut root = read_or_default();
+    if !root.is_mapping() {
+        root = Value::Mapping(Mapping::new());
     }
-    root[key] = value.clone();
+    if let Value::Mapping(map) = &mut root {
+        map.insert(Value::String(key.to_string()), value.clone());
+    }
 
     // 用整份反序列化兜底：字段之间若有耦合，这里会直接报出来。
-    if let Err(err) = serde_json::from_value::<Config>(root.clone()) {
+    if let Err(err) = serde_yaml::from_value::<Config>(root.clone()) {
         return fail(&format!("`{key}` 取值不合法：{err}"));
     }
     if let Err(err) = write_file(&root) {
@@ -202,13 +215,19 @@ fn unset(key: &str) -> ExitCode {
     if let Err(err) = known_key(key) {
         return fail(&err);
     }
-    let mut root = read_file().unwrap_or_else(|| json!({}));
-    let default = serde_json::to_value(Config::default()).unwrap_or(Value::Null);
-    root[key] = default.get(key).cloned().unwrap_or(Value::Null);
+    let mut root = read_or_default();
+    if !root.is_mapping() {
+        root = Value::Mapping(Mapping::new());
+    }
+    let default = serde_yaml::to_value(Config::default()).unwrap_or(Value::Null);
+    let fallback = default.get(key).cloned().unwrap_or(Value::Null);
+    if let Value::Mapping(map) = &mut root {
+        map.insert(Value::String(key.to_string()), fallback.clone());
+    }
     if let Err(err) = write_file(&root) {
         return fail(&format!("写入失败：{err}"));
     }
-    println!("{key} = {}（默认值）", plain(&root[key]));
+    println!("{key} = {}（默认值）", plain(&fallback));
     hint_restart();
     ExitCode::SUCCESS
 }
@@ -236,17 +255,18 @@ fn edit() -> ExitCode {
     let status = std::process::Command::new(&editor).arg(&path).status();
     match status {
         Ok(status) if status.success() => {
-            // 手改最容易写坏 JSON，顺手校验一次。
-            match std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
-            {
-                Some(_) => {
+            // 手改最容易写坏 YAML；serde_yaml 的报错带行列号，直接给人看。
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            match Config::from_yaml(&raw) {
+                Ok(_) => {
                     println!("{} 校验通过", path.display());
                     hint_restart();
                     ExitCode::SUCCESS
                 }
-                None => fail(&format!("{} 解析失败，daemon 会退回默认值", path.display())),
+                Err(err) => fail(&format!(
+                    "{} 解析失败（daemon 会退回默认值）：\n  {err}",
+                    path.display()
+                )),
             }
         }
         Ok(status) => fail(&format!("编辑器退出码 {status}")),
@@ -280,9 +300,9 @@ fn known_key(key: &str) -> Result<(), String> {
     ))
 }
 
-/// 按默认值的 JSON 类型决定怎么解析用户输入，避免"全都当字符串"。
+/// 按默认值的类型决定怎么解析用户输入，避免"全都当字符串"。
 fn coerce(key: &str, raw: &str) -> Result<Value, String> {
-    let default = serde_json::to_value(Config::default()).map_err(|e| e.to_string())?;
+    let default = serde_yaml::to_value(Config::default()).map_err(|e| e.to_string())?;
     let template = default
         .get(key)
         .ok_or_else(|| format!("未知键 `{key}`"))?
@@ -290,8 +310,8 @@ fn coerce(key: &str, raw: &str) -> Result<Value, String> {
 
     match template {
         Value::Bool(_) => match raw.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" | "on" => Ok(json!(true)),
-            "false" | "0" | "no" | "off" => Ok(json!(false)),
+            "true" | "1" | "yes" | "on" => Ok(Value::Bool(true)),
+            "false" | "0" | "no" | "off" => Ok(Value::Bool(false)),
             _ => Err(format!("`{key}` 只接受 true / false")),
         },
         Value::Number(n) if n.is_i64() || n.is_u64() => {
@@ -299,14 +319,14 @@ fn coerce(key: &str, raw: &str) -> Result<Value, String> {
                 .trim()
                 .parse()
                 .map_err(|_| format!("`{key}` 需要一个整数，收到 `{raw}`"))?;
-            Ok(json!(parsed))
+            Ok(Value::from(parsed))
         }
         Value::Number(_) => {
             let parsed: f64 = raw
                 .trim()
                 .parse()
                 .map_err(|_| format!("`{key}` 需要一个小数，收到 `{raw}`"))?;
-            Ok(json!(parsed))
+            Ok(Value::from(parsed))
         }
         _ => Ok(Value::String(raw.trim_matches('"').to_string())),
     }
@@ -352,27 +372,38 @@ fn validate(key: &str, value: Value) -> Result<Value, String> {
 fn plain(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
-        other => other.to_string(),
+        Value::Null => "null".into(),
+        other => serde_yaml::to_string(other)
+            .map(|s| s.trim_end().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// 整数与浮点混写时（`720` vs `720.0`）不该被当成「改过」。
+fn same_value(left: Option<&Value>, right: &Value) -> bool {
+    match (left, right) {
+        (Some(Value::Number(a)), Value::Number(b)) => match (a.as_f64(), b.as_f64()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        },
+        (Some(a), b) => a == b,
+        (None, _) => false,
     }
 }
 
 fn read_file() -> Option<Value> {
     let raw = std::fs::read_to_string(config::config_path()).ok()?;
-    serde_json::from_str(&raw).ok()
+    serde_yaml::from_str(&raw).ok()
+}
+
+/// 文件不存在（或为空）时从默认值起步：写出的是完整配置，而不是只有一个键的碎片。
+fn read_or_default() -> Value {
+    read_file().unwrap_or_else(|| serde_yaml::to_value(Config::default()).unwrap_or(Value::Null))
 }
 
 fn write_file(value: &Value) -> anyhow::Result<()> {
-    let path = config::config_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    // 先写临时文件再改名：daemon 可能正在读，不能让它看到半截 JSON。
-    let tmp = path.with_extension("json.tmp");
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(&serde_json::to_vec_pretty(value)?)?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    // 抬头、原子写、schema 落盘都在 `config` 里：CLI 与 daemon 必须写出同一个格式。
+    config::write_yaml(value)
 }
 
 #[cfg(test)]
@@ -382,11 +413,17 @@ mod tests {
 
     #[test]
     fn coercion_follows_default_type() {
-        assert_eq!(coerce("show_detail", "false").unwrap(), json!(false));
-        assert_eq!(coerce("show_detail", "ON").unwrap(), json!(true));
-        assert_eq!(coerce("max_results", "12").unwrap(), json!(12));
-        assert_eq!(coerce("panel_width", "800.5").unwrap(), json!(800.5));
-        assert_eq!(coerce("trigger", ";;").unwrap(), json!(";;"));
+        assert_eq!(coerce("show_detail", "false").unwrap(), Value::Bool(false));
+        assert_eq!(coerce("show_detail", "ON").unwrap(), Value::Bool(true));
+        assert_eq!(coerce("max_results", "12").unwrap(), Value::from(12));
+        assert_eq!(
+            coerce("panel_width", "800.5").unwrap(),
+            Value::from(800.5)
+        );
+        assert_eq!(
+            coerce("trigger", ";;").unwrap(),
+            Value::String(";;".into())
+        );
     }
 
     #[test]
@@ -398,29 +435,40 @@ mod tests {
 
     #[test]
     fn validation_catches_semantic_errors() {
-        assert!(validate("trigger", json!(";;")).is_ok());
+        assert!(validate("trigger", Value::String(";;".into())).is_ok());
         // 中文没有物理键码，早失败好过让 daemon 起不来
-        assert!(validate("trigger", json!("，，")).is_err());
-        assert!(validate("trigger", json!(";;;;;")).is_err());
-        assert!(validate("max_results", json!(0)).is_err());
-        assert!(validate("panel_width", json!(-10.0)).is_err());
-        assert!(validate("focus_mode", json!("activating")).is_ok());
-        assert!(validate("focus_mode", json!("whatever")).is_err());
+        assert!(validate("trigger", Value::String("，，".into())).is_err());
+        assert!(validate("trigger", Value::String(";;;;;".into())).is_err());
+        assert!(validate("max_results", Value::from(0)).is_err());
+        assert!(validate("panel_width", Value::from(-10.0)).is_err());
+        assert!(validate("focus_mode", Value::String("activating".into())).is_ok());
+        assert!(validate("focus_mode", Value::String("whatever".into())).is_err());
     }
 
     #[test]
     fn every_field_is_settable() {
         // 保证 FIELDS 与 Config 的字段集合一致，避免只加结构体忘加表
-        let default = serde_json::to_value(Config::default()).unwrap();
+        let default = serde_yaml::to_value(Config::default()).unwrap();
         for (key, _) in FIELDS {
             assert!(default.get(*key).is_some(), "Config 里没有字段 {key}");
             assert!(known_key(key).is_ok());
         }
         assert_eq!(
-            default.as_object().unwrap().len(),
+            default.as_mapping().unwrap().len(),
             FIELDS.len(),
             "Config 新增了字段但 FIELDS 没跟上"
         );
+    }
+
+    #[test]
+    fn integer_and_float_compare_equal() {
+        // 手写 `panel_width: 720` 与默认的 `720.0` 是同一个值
+        assert!(same_value(
+            Some(&Value::from(720.0)),
+            &Value::from(720)
+        ));
+        assert!(!same_value(Some(&Value::from(720.0)), &Value::from(721)));
+        assert!(!same_value(None, &Value::Null));
     }
 
     #[test]
@@ -439,6 +487,7 @@ mod tests {
 
         assert!(parse(&[]).unwrap().is_none());
         assert!(matches!(parse(&["show"]).unwrap(), Some(ConfigCmd::Show)));
+        assert!(matches!(parse(&["schema"]).unwrap(), Some(ConfigCmd::Schema)));
         // 带空格的取值不加引号也能拼起来
         match parse(&["set", "trigger", "a", "b"]).unwrap() {
             Some(ConfigCmd::Set { key, value }) => {

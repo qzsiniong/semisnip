@@ -34,6 +34,10 @@ RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同�
 
 内容没变时不重写，所以不会无谓刷 mtime。改 `src/mark.rs` 里任何常量，下次构建三张图一起更新。
 
+## 配置 schema 别忘同步
+
+`assets/config.schema.json` 会在编译期被 `include_str!` 嵌进二进制，装好后写到 `config.yml` 旁边给编辑器用。改 `Config` 的字段、默认值、取值区间时**必须同时改它**——`schema_file_matches_the_struct` 会比对字段集合、每个 `default`、以及是否都有 `type` / `description`，漏改直接测试失败。
+
 ## 打包
 
 ```bash

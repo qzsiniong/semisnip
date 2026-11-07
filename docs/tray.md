@@ -17,7 +17,7 @@ lsappinfo list | grep -A3 -i snipshot   # 应看到 type="UIElement"
 ──────────
 重建索引
 ──────────
-打开配置…           ← 用系统默认程序打开 config.json
+打开配置…           ← 用系统默认程序打开 config.yml
 打开 snipshot.yml…  ← espanso 的那个降级触发定义（不存在时打开其目录）
 打开日志…
 ──────────

@@ -21,6 +21,7 @@ snipshot log -f               # 复现问题时盯着
 | `doctor` 说「当前进程有授权，但 daemon 没有」 | TCC 按进程判：终端跑的命令继承终端授权，launchd 起的 daemon 是独立条目；ad-hoc 重签名后条目会失效 | 系统设置 → 隐私与安全性 → 辅助功能，删掉旧的 Snipshot 再重新添加 |
 | 日志里每 10 秒一条「已有 daemon 在运行」 | 老版本抢 socket 失败时退出码为 1，launchd 的 `KeepAlive` 于是不停重启 | 已在 0.1.x 修掉（该情况改为退出码 0）；重装即可 |
 | 改完 `config` 没生效 | daemon 启动时只读一次配置 | `launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon` |
+| 配置好像被忽略了 | YAML 写坏、类型不对，`Config::load` 退回默认值 | `snipshot log -l warn` 里找「配置解析失败」，报错带行列号；或 `snipshot config edit` 退出时会校验 |
 | 菜单栏看不到图标 | 菜单栏排满，被折叠进溢出区 | 见 [菜单栏与图标 · 图标没出现？](tray.md#图标没出现) |
 
 ## 已知限制

@@ -103,7 +103,7 @@ flowchart TB
 |---|---|
 | [安装](docs/install.md) | 前置条件、打包脚本做了什么、辅助功能授权、签名与分发 |
 | [使用](docs/usage.md) | 按键、过滤与排序、预览、三种唤起方式、中文输入法 |
-| [配置](docs/configuration.md) | `config.json` 全部字段、`config` 子命令、本地文件清单 |
+| [配置](docs/configuration.md) | `config.yml` 全部字段、schema 补全、`config` 子命令、本地文件清单 |
 | [命令行](docs/cli.md) | 命令总表，`match` / `completion` / `log` / `uninstall` 细节 |
 | [架构](docs/architecture.md) | 数据流、模块边界、触发与焦点、回传顺序、数据源、预览安全边界 |
 | [菜单栏与图标](docs/tray.md) | 为什么不在 Dock、菜单项、图标生成方式、图标没出现怎么查 |

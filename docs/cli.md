@@ -80,7 +80,7 @@ fi
 
 ## `config`
 
-见 [配置](configuration.md#怎么改)。
+见 [配置](configuration.md#怎么改)。配置文件是 YAML，`snipshot config schema` 打印配套的 JSON Schema 路径（编辑器据此补全与校验）。
 
 ## `log`
 

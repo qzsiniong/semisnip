@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "snipshot 配置",
+  "description": "~/Library/Application Support/snipshot/config.yml。daemon 只在启动时读一次，改完要重启才生效。用 `snipshot config set` 修改会自动校验。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "trigger": {
+      "title": "触发串",
+      "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（snipshot match regenerate）。",
+      "type": "string",
+      "default": ";;",
+      "minLength": 1,
+      "maxLength": 4,
+      "pattern": "^[\\x20-\\x7E]+$",
+      "examples": [";;", ",,", "jk"]
+    },
+    "trigger_timeout_ms": {
+      "title": "触发键间隔",
+      "description": "两个触发键之间的最大间隔（毫秒）。超过这个时间就当作普通输入，面板不会打开。",
+      "type": "integer",
+      "default": 800,
+      "minimum": 200,
+      "maximum": 3000
+    },
+    "focus_mode": {
+      "title": "焦点模式",
+      "description": "nonactivating：面板不抢焦点，目标 App 全程不失焦（默认）。activating：抢焦点，可用输入法，但该分支尚未实现。",
+      "type": "string",
+      "default": "nonactivating",
+      "enum": ["nonactivating", "activating"]
+    },
+    "max_results": {
+      "title": "候选条数",
+      "description": "面板列表最多显示几条。",
+      "type": "integer",
+      "default": 9,
+      "minimum": 1,
+      "maximum": 100
+    },
+    "panel_width": {
+      "title": "面板宽度",
+      "description": "逻辑像素，最小 360。太窄预览会被挤成一列字。",
+      "type": "number",
+      "default": 720.0,
+      "minimum": 200,
+      "maximum": 2000
+    },
+    "panel_height": {
+      "title": "面板高度",
+      "description": "逻辑像素，最小 200。",
+      "type": "number",
+      "default": 420.0,
+      "minimum": 200,
+      "maximum": 2000
+    },
+    "post_exec_delay_ms": {
+      "title": "回传前等待",
+      "description": "面板关闭到 espanso match exec 之间的等待（毫秒）。非激活模式下可接近 0。",
+      "type": "integer",
+      "default": 12,
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "preview_clipboard": {
+      "title": "预览剪贴板",
+      "description": "详情区是否显示剪贴板全文。false 时只显示字符数——剪贴板里可能是密码。",
+      "type": "boolean",
+      "default": false
+    },
+    "show_detail": {
+      "title": "显示详情区",
+      "description": "是否显示右侧预览区。关掉后列表会占满整个面板宽度。",
+      "type": "boolean",
+      "default": true
+    },
+    "allow_paste_fallback": {
+      "title": "粘贴兜底",
+      "description": "espanso match exec 失败时，用「安全渲染 + 剪贴板粘贴」兜底。需要辅助功能权限；会覆盖剪贴板。",
+      "type": "boolean",
+      "default": true
+    }
+  }
+}
