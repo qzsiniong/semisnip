@@ -1,0 +1,96 @@
+name: CI
+
+# 提交/PR 跑格式、lint、测试与一次打包冒烟；release.yml 打包前用 workflow_call 复用同一套。
+#
+# 只有 macOS 一个平台：这个工具本身就是 macOS 专属的——espanso 的 match 目录、
+# LaunchAgent、`NSPanel` 非激活面板、CGEventTap 取键、辅助功能 TCC 授权，没有一样
+# 在别的系统上有对应物。在 ubuntu 上跑 `cargo test` 会先卡在 gpui 的图形栈依赖上，
+# 换来的信息量为零，所以不设那个矩阵。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 增量编译的产物在 CI 里用不上，关掉省缓存体积
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt / clippy / test（macOS）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 格式检查
+        run: cargo fmt --all --check
+
+      # `-D warnings`：CI 里警告就是错误。本地想快速迭代可以不带这个参数，
+      # 但发版前 scripts/release.sh 跑的是同一行，别让两者有分歧。
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # --no-fail-fast：一个测试二进制挂了也把其余的跑完，一次拿到全部失败
+      - name: 测试
+        run: cargo test --no-fail-fast
+
+  bundle:
+    name: 打包冒烟（.app 能否组装出来）
+    runs-on: macos-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 单独占一个 job 而不是塞进 check：打包走 release profile，和上面的
+      # debug 编译不共享产物，但能验证 check 验证不到的东西——build.rs 有没有
+      # 生成图标、Info.plist 能不能被 PlistBuddy 改、ad-hoc 签名会不会失败。
+      # 这三件事只有真打一次包才知道。
+      - name: 打包
+        run: ./scripts/bundle-macos.sh
+
+      - name: 校验 bundle
+        run: |
+          set -euo pipefail
+          app="target/Semisnip.app"
+          bin="$app/Contents/MacOS/semisnip"
+
+          plutil -lint "$app/Contents/Info.plist"
+
+          expected="$(awk -F'"' '/^version = "/{print $2; exit}' Cargo.toml)"
+          got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          if [[ "$got" != "$expected" ]]; then
+            echo "::error::Info.plist 的版本是 $got，Cargo.toml 是 $expected——打包脚本没注入版本"
+            exit 1
+          fi
+
+          # 二进制能跑，且它自己报的版本与 plist 一致（clap 的 version 来自 Cargo.toml）
+          reported="$("$bin" --version)"
+          if [[ "$reported" != "semisnip $expected" ]]; then
+            echo "::error::二进制报告的是「$reported」，期望「semisnip $expected」"
+            exit 1
+          fi
+
+          # ad-hoc 签名也是签名：verify 能过，说明 Info.plist 是在签之前改的。
+          # 这条能挡住「先签后改 plist」这类顺序错误（改了之后签名直接失效）。
+          codesign --verify --strict "$app"
+
+          # LSUIElement 丢了 → 进程会进 Dock，这是个静默的体验退化
+          /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app/Contents/Info.plist" | grep -qx true
+          echo "✓ bundle 正常：$(du -sh "$app" | cut -f1)"

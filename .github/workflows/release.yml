@@ -1,0 +1,172 @@
+name: Release
+
+# 推 tag（如 v0.1.0）即打一个 universal 的 macOS 包，挂到 GitHub Release 的草稿里；
+# workflow_dispatch 只打包、只上传 workflow artifact，不碰 Release（用来先试跑流水线）。
+#
+# 为什么是草稿：这个包没有 Apple 开发者签名，也没有公证。直接发出去等于让
+# 第一个下载的人撞上系统弹的「无法验证开发者」。草稿留一步——自己先下下来
+# 在干净机器上装一遍，确认能开，再去 Releases 页面点 Publish。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 打包前先把 ci.yml 那套跑一遍：tag 指向的提交必须是通过测试的提交。
+  # 用 workflow_call 而不是复制一份 step，是为了让 CI 与发版的判据永远是同一套。
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  verify:
+    name: 校验版本号
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本号的真源是 Cargo.toml 的 [package].version：.app 的 Info.plist
+      # 是打包时由 bundle-macos.sh 从它注入的，二进制里 clap 的 --version 也来自它。
+      # 所以这里只需要比这一处。
+      - name: tag 与 Cargo.toml 的 version 一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version = "/{print $2; exit}' Cargo.toml)"
+          if [[ -z "${version}" ]]; then
+            echo "::error::读不到 Cargo.toml 的 [package].version"
+            exit 1
+          fi
+          echo "ref=${GITHUB_REF}  tag=${GITHUB_REF_NAME}  Cargo.toml=${version}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "手动触发：跳过 tag 校验"
+            exit 0
+          fi
+          if [[ "${GITHUB_REF_NAME#v}" != "${version}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 Cargo.toml 的 version ${version} 不一致（安装包里显示的版本号取自后者）"
+            echo "::error::先把 Cargo.toml 改成 ${GITHUB_REF_NAME#v}（可用 scripts/release.sh），再重新打 tag"
+            exit 1
+          fi
+
+  build:
+    name: 打包 macOS（universal）
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 两个 target 都要显式装：universal 不是 cargo 的概念，是打完两次再 lipo 拼起来。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 与本地同一条命令：本地 `--universal --dist` 打出来的东西就是这里发出去的东西。
+      - name: 打包（.app + dmg + zip）
+        run: ./scripts/bundle-macos.sh --universal --dist
+
+      - name: 校验产物
+        run: |
+          set -euo pipefail
+          app="target/Semisnip.app"
+          bin="$app/Contents/MacOS/semisnip"
+          dmg="$(ls target/Semisnip-*-universal.dmg)"
+          zip="$(ls target/Semisnip-*-universal.zip)"
+          echo "dmg=$dmg  zip=$zip"
+
+          # universal 就是要两个架构都在；少一个说明某一侧没编成或被覆盖了
+          archs="$(lipo -archs "$bin")"
+          echo "架构：$archs"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || {
+            echo "::error::不是 universal 二进制：$archs"
+            exit 1
+          }
+
+          # 版本注入 + 签名顺序（改 plist 必须在 codesign 之前，否则签名失效）
+          expected="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+            [[ "$got" == "$expected" ]] || {
+              echo "::error::Info.plist 版本 $got ≠ tag $expected"
+              exit 1
+            }
+            # lipo 出来的二进制本身也得能跑，且自报版本与 tag 一致
+            reported="$("$bin" --version)"
+            [[ "$reported" == "semisnip $expected" ]] || {
+              echo "::error::二进制报告「$reported」，期望「semisnip $expected」"
+              exit 1
+            }
+          fi
+          codesign --verify --strict "$app"
+
+          # dmg 的校验和；也顺手确认它不是个空壳
+          hdiutil verify "$dmg" >/dev/null
+          [[ "$(stat -f%z "$dmg")" -gt 1000000 ]] || {
+            echo "::error::dmg 体积异常，疑似没装进东西"
+            exit 1
+          }
+          # 先把清单读进来再 grep：`unzip -l | grep -q` 在 pipefail 下会因为
+          # grep 提前退出给 unzip 一个 SIGPIPE，把整条流水线判成失败。
+          listing="$(unzip -l "$zip")"
+          if ! grep -q 'Semisnip.app/Contents/MacOS/semisnip' <<<"$listing"; then
+            echo "::error::zip 里没有二进制"
+            exit 1
+          fi
+
+      - name: 上传 workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Semisnip-${{ github.ref_name }}-universal
+          path: |
+            target/Semisnip-*-universal.dmg
+            target/Semisnip-*-universal.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # tag 触发才建 Release。草稿 + 自动生成更新日志；body 里的说明是给下载者看的，
+      # 未签名这件事必须写在最前面，否则第一个 Issue 一定是「打不开」。
+      - name: 建 Release 草稿
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Semisnip ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            下载 `Semisnip_*_universal.dmg`（arm64 + x86_64 通用），打开后把 `Semisnip.app` 拖进 `Applications`。
+
+            ```bash
+            # 或者用 zip
+            ditto -x -k Semisnip-*-universal.zip /Applications
+            ```
+
+            **这个包未签名、未公证**，首次打开会被 Gatekeeper 拦下。三种放行方式任选：
+
+            - 右键点 `Semisnip.app` →「打开」→ 再点「打开」
+            - 系统设置 → 隐私与安全性 → 底部「仍要打开」
+            - `xattr -cr /Applications/Semisnip.app`
+
+            ## 装完还要做两步
+
+            1. 系统设置 → 隐私与安全性 → **辅助功能** → 勾选 `Semisnip`
+               （没有它 `;;` 会退化成走 espanso 的 shell 变量：能开面板，但面板收不到按键）
+            2. `espanso restart`
+
+            然后 `semisnip doctor` 应当每项都打勾。CLI 在 `.app` 里，需要的话补一条软链：
+
+            ```bash
+            sudo ln -sf /Applications/Semisnip.app/Contents/MacOS/semisnip /usr/local/bin/semisnip
+            ```
+          files: |
+            target/Semisnip-*-universal.dmg
+            target/Semisnip-*-universal.zip
+          fail_on_unmatched_files: true

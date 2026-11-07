@@ -1,5 +1,10 @@
 # 安装
 
+## 两条路
+
+- **用现成的包**：到 [Releases](https://github.com/qzsiniong/semisnip/releases) 下 `Semisnip-<版本>-universal.dmg`（arm64 + x86_64 通用），拖进 `Applications`。包**未签名/未公证**，首次打开先 `xattr -cr /Applications/Semisnip.app`，或右键 →「打开」→ 再点一次「打开」。装完仍要做下面那两步手动授权。
+- **从源码装**：见下面的「一条命令」，会顺带装好 LaunchAgent 与 CLI 软链。
+
 ## 前置条件
 
 - macOS（当前仅支持 macOS）
@@ -19,6 +24,7 @@ git clone <repo> && cd semisnip
 |---|---|
 | `cargo build --release` | 顺带由 `build.rs` 生成 `AppIcon.icns` |
 | 组装 `Semisnip.app` | 二进制 + `Info.plist` + 图标，产出放在 `target/` |
+| 注入版本号 | 从 `Cargo.toml` 写进 `Info.plist` 的 `CFBundleShortVersionString`（在签名之前） |
 | ad-hoc 签名 | `codesign --sign -`，够本机自用 |
 | 拷到 `/Applications` | `--install` 才会执行 |
 | 注册 LaunchAgent | `~/Library/LaunchAgents/com.semisnip.daemon.plist` |
@@ -26,7 +32,7 @@ git clone <repo> && cd semisnip
 | 写入 espanso 触发定义 | `$ESPANSO_CONFIG/match/semisnip.yml` |
 | 装 shell 补全 | 失败不中断安装，可稍后 `semisnip completion` |
 
-不带 `--install` 时只产出 `target/Semisnip.app`，不碰系统里的任何东西。
+不带 `--install` 时只产出 `target/Semisnip.app`，不碰系统里的任何东西。要出通用二进制或 dmg/zip，加 `--universal` / `--dist`，见 [发版](release.md)。
 
 ## 之后必须手动做两步
 
@@ -78,6 +84,8 @@ alias semisnip=/Applications/Semisnip.app/Contents/MacOS/semisnip
 ## 分发
 
 ad-hoc 签名只够本机自用。要给别人用，把 `scripts/bundle-macos.sh` 里的 `codesign --sign -` 换成 Developer ID，并补上 notarization，否则对方首次打开会被 Gatekeeper 拦下。
+
+当前是通过 GitHub Release 分发**未签名**的 universal 包，靠「右键 → 打开」放行；打 tag 之后流水线做了什么、产物长什么样，见 [发版](release.md)。
 
 ## 卸载
 

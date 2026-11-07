@@ -118,6 +118,7 @@ flowchart TB
 | [菜单栏与图标](docs/tray.md) | 为什么不在 Dock、菜单项、图标生成方式、图标没出现怎么查 |
 | [故障排查](docs/troubleshooting.md) | 现象对照表、已知限制 |
 | [开发](docs/development.md) | 测试、本地调试、打包、改动约定 |
+| [发版](docs/release.md) | 版本号只有一个来源、`release.sh`、CI 与 tag 发版流水线、未签名怎么装 |
 
 ## 已知限制
 

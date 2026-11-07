@@ -41,11 +41,15 @@ RUST_LOG=debug ./target/debug/semisnip daemon   # 前台跑 daemon，日志同�
 ## 打包
 
 ```bash
-./scripts/bundle-macos.sh            # 只产出 target/Semisnip.app
-./scripts/bundle-macos.sh --install  # 安装到 /Applications + LaunchAgent + CLI 软链
+./scripts/bundle-macos.sh             # 只产出 target/Semisnip.app（本机架构）
+./scripts/bundle-macos.sh --universal # arm64 + x86_64 合成通用二进制
+./scripts/bundle-macos.sh --dist      # 顺带出 target/Semisnip-<版本>-<架构>.{dmg,zip}
+./scripts/bundle-macos.sh --install   # 安装到 /Applications + LaunchAgent + CLI 软链
 ```
 
-细节（签名、权限、LaunchAgent）见 [安装](install.md)。
+版本号由脚本从 `Cargo.toml` 注入 `Info.plist`（在 `codesign` 之前），所以 `.app` 显示的版本永远等于刚构建的二进制。细节（签名、权限、LaunchAgent）见 [安装](install.md)。
+
+发版走 `scripts/release.sh`，CI 与 tag 发版流水线见 [发版](release.md)。
 
 ## 改动方向上的约定
 
