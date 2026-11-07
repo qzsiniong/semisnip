@@ -134,6 +134,11 @@ impl SnippetSource for YamlSource {
 }
 
 /// 递归收集 YAML；`_` 开头的文件与 espanso 一样跳过。
+///
+/// 另外跳过我们自己写的 [`crate::paths::ESPANSO_MATCH_FILE`]：那份文件不是
+/// 片段库，是「降级触发」的接线（一条 `;;` → 调 `semisnip trigger`）。
+/// 把它当片段收进来，面板里就会多出一行用户从没写过的「打开片段面板」，
+/// 而且它还会参与排序、占掉一个候选位——用户找片段时只会觉得莫名其妙。
 fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -148,7 +153,7 @@ fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
             collect_yaml(&path, out);
             continue;
         }
-        if name.starts_with('_') {
+        if name.starts_with('_') || name == crate::paths::ESPANSO_MATCH_FILE {
             continue;
         }
         let is_yaml = name.ends_with(".yml") || name.ends_with(".yaml");
@@ -340,6 +345,30 @@ mod tests {
             .find(|s| s.trigger() == ":pkg")
             .expect("package 里的 match 应被加载");
         assert_eq!(pkg.source.package.as_deref(), Some("demo"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn our_own_trigger_file_is_not_a_snippet() {
+        // semisnip.yml 是我们自己写的降级触发定义，不是用户的片段。
+        // 它一旦被收进索引，面板里就会多一行「semisnip · 打开片段面板」。
+        let dir = std::env::temp_dir().join(format!("semisnip-test-own-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("match")).unwrap();
+        std::fs::write(
+            dir.join("match").join("semisnip.yml"),
+            "matches:\n  - trigger: \";;\"\n    replace: \"{{output}}\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("match").join("base.yml"),
+            "matches:\n  - trigger: \";;log\"\n    replace: \"console.log()\"\n",
+        )
+        .unwrap();
+
+        let snapshot = source_for(&dir).load().unwrap();
+        assert_eq!(snapshot.len(), 1, "只该剩 base.yml 里那条");
+        assert_eq!(snapshot.snippets[0].trigger(), ";;log");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

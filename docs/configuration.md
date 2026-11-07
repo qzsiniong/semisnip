@@ -124,3 +124,5 @@ launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
 见上文「位置」。两个目录各管一摊：`Application Support/semisnip` 是可以备份、值得手改的东西，`Caches/semisnip` 里的 socket 删了也只会让 daemon 重建。
 
 片段永远只存在于 espanso 的 `match/**/*.yml` 里。semisnip 唯一写进那个目录的文件是 `semisnip.yml`（降级触发定义），见 [命令行 · match](cli.md#match)。
+
+那个文件**不会**出现在面板的候选里：它的 `;;` 是「tap 不可用时叫醒 semisnip」的接线，不是用户的片段。索引直接跳过它（`index/loader.rs` 的 `collect_yaml`），否则面板里会凭空多一条没人写过的「打开片段面板」。

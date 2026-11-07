@@ -237,13 +237,17 @@ impl AppState {
     }
 
     /// 一行健康状态（面板头部右侧）。
+    ///
+    /// 只说"校验过没有"，不报 trigger 总数：`espanso_known` 里有 espanso 认识的
+    /// **全部** trigger，包括我们自己写进 `semisnip.yml` 的那条降级触发，
+    /// 报出来会比左边候选数多一个（"4/4 · espanso 已校验 5"），看着像 bug。
     pub fn health_line(&self) -> String {
         let snapshot = self.index.snapshot();
         if snapshot.is_empty() {
             return "未读到片段".to_string();
         }
         if snapshot.espanso_checked {
-            format!("espanso 已校验 {}", snapshot.espanso_known.len())
+            "espanso 已校验".to_string()
         } else {
             "espanso 未校验".to_string()
         }

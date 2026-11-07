@@ -18,6 +18,7 @@ gpui_kit::actions!(
     semisnip_tray,
     [
         OpenPanel,
+        ClosePanel,
         ReloadIndex,
         OpenSettings,
         OpenGuide,
@@ -29,12 +30,25 @@ gpui_kit::actions!(
 );
 
 /// 保住 `Tray` 的句柄。丢了它 NSStatusItem 会被移除，图标当场消失。
-/// 字段从不读取，`_tray` 的下划线就是这个意思——它的价值在于"仍然存在"。
+/// 除了「别被回收」，它还是刷新菜单的入口：[`refresh`]。
 struct GlobalTray {
-    _tray: gpui_tray::Tray,
+    tray: gpui_tray::Tray,
 }
 
 impl gpui_kit::Global for GlobalTray {}
+
+/// 重建菜单。面板开合之后必须调一次，否则菜单第一项会停在旧文案上
+/// （用户看着「打开片段面板」，点下去却发现面板已经开着）。
+///
+/// 菜单项文案依赖面板状态，所以菜单是「按需重建」而不是一次定死。
+pub fn refresh(cx: &mut App) {
+    let Some(tray) = cx.try_global::<GlobalTray>().map(|g| g.tray.clone()) else {
+        return;
+    };
+    if let Err(err) = tray.refresh_menu(cx) {
+        log::warn!("刷新菜单栏菜单失败：{err}");
+    }
+}
 
 pub fn install(cx: &mut App, tx: Sender<Event>) -> anyhow::Result<()> {
     register_actions(cx, tx);
@@ -45,18 +59,40 @@ pub fn install(cx: &mut App, tx: Sender<Event>) -> anyhow::Result<()> {
         .menu(menu)
         .build(cx)?;
 
-    cx.set_global(GlobalTray { _tray: tray });
+    cx.set_global(GlobalTray { tray });
     log::info!("菜单栏图标已就绪");
     Ok(())
 }
 
-fn menu(_cx: &mut App) -> Vec<MenuItem> {
-    menu_items()
+fn menu(cx: &mut App) -> Vec<MenuItem> {
+    menu_items(panel_open(cx))
 }
 
-fn menu_items() -> Vec<MenuItem> {
+/// 面板此刻是否开着。菜单文案要用，但拿不到 `Entity` 就按「没开」处理——
+/// 菜单栏比面板更早存在（install 时面板一定是关的）。
+///
+/// 判据是**窗口句柄**而不是 `state.open`：用户看见的是窗口，菜单跟着窗口走
+/// 才不会出现「写着打开、点下去没反应」。句柄在 `window::open` 里先落、
+/// 在 `window::close` 里先摘，所以两处刷新时读到的都是最终状态。
+fn panel_open(cx: &App) -> bool {
+    cx.try_global::<crate::app::state::GlobalApp>()
+        .map(|global| global.0.read(cx).handle.is_some())
+        .unwrap_or(false)
+}
+
+/// 菜单内容。第一项随面板状态切换：**这是没有键盘时的正规出口**。
+///
+/// 面板是 `NonactivatingPanel`，只要键盘一路（CGEventTap）断了——没给
+/// 「辅助功能」权限、或重签之后授权失效——面板就收不到 `Esc`。这时从菜单栏
+/// 原路点「关闭片段面板」是唯一不依赖权限的收尾方式，所以它必须存在。
+fn menu_items(panel_open: bool) -> Vec<MenuItem> {
+    let first = if panel_open {
+        MenuItem::action("关闭片段面板", ClosePanel)
+    } else {
+        MenuItem::action("打开片段面板", OpenPanel)
+    };
     vec![
-        MenuItem::action("打开片段面板", OpenPanel),
+        first,
         MenuItem::separator(),
         MenuItem::action("偏好设置…", OpenSettings),
         MenuItem::action("使用引导…", OpenGuide),
@@ -80,6 +116,13 @@ fn register_actions(cx: &mut App, tx: Sender<Event>) {
             origin: Origin::Manual,
             erase: 0,
         });
+    });
+
+    // 与按 Esc 完全同一条路：Cancel 会让 scheduler 放开吞键、删窗口、
+    // 必要时回删触发符。这里绝不能自己关窗，否则收尾逻辑会分叉。
+    let close = tx.clone();
+    cx.on_action(move |_: &ClosePanel, _: &mut App| {
+        let _ = close.send(Event::Cancel);
     });
 
     let reload = tx.clone();
@@ -176,7 +219,7 @@ mod tests {
     #[test]
     fn menu_entries_are_well_formed() {
         // 菜单里每一项都得是已定义的动作，否则点下去没反应
-        let items = menu_items();
+        let items = menu_items(false);
         assert_eq!(items.len(), 12);
         assert!(matches!(items[0], MenuItem::Action { .. }));
         // 分组线：打开 | 两个窗口 | 重建 | 三个"打开…" | 退出
@@ -187,5 +230,19 @@ mod tests {
             );
         }
         assert!(matches!(items[11], MenuItem::Action { .. }));
+    }
+
+    #[test]
+    fn first_item_toggles_with_the_panel() {
+        // 面板开着时第一项必须是「关闭」：键盘坏了（没授权 / 重签后授权失效）
+        // 的时候，菜单是唯一能把面板收起来的地方，文案错了就等于没有出口。
+        let name = |items: Vec<MenuItem>| match &items[0] {
+            MenuItem::Action { name, .. } => name.to_string(),
+            _ => panic!("第一项应是动作"),
+        };
+        assert_eq!(name(menu_items(false)), "打开片段面板");
+        assert_eq!(name(menu_items(true)), "关闭片段面板");
+        // 除第一项外，两种状态下菜单结构完全一致
+        assert_eq!(menu_items(false).len(), menu_items(true).len());
     }
 }

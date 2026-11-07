@@ -27,6 +27,8 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 退出 semisnip       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
 ```
 
+第一项**随面板状态变**：面板开着就变成「关闭片段面板」。这不是装饰——面板是 `NonactivatingPanel`，收起来只有两条路：键盘（CGEventTap 转发的 `Esc`）和鼠标。没有「辅助功能」权限时 tap 根本装不上，面板一个按键都收不到；那时从菜单栏原路点「关闭」是唯一不依赖权限的出口。菜单文案按**窗口句柄**判断（不是 `state.open`），开合之后各刷一次，所以不会出现「写着打开、点下去没反应」。
+
 菜单项不是直接调系统 API：面板与索引相关的那几项发 GPUI action 回到 scheduler 的事件通道——和 `semisnip trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。两个窗口（设置 / 引导）反过来是直接开的：它们的生命周期和面板无关，也不该被 `panel_open` 状态影响。
 
 窗口本身（版式、字段、四步流程）见 **[设置与首次引导](settings.md)**。

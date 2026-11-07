@@ -13,6 +13,7 @@ semisnip log -f               # 复现问题时盯着
 |---|---|---|
 | 敲 `;;` 没反应 | 辅助功能未授权，且 espanso 降级 match 还没生效 | 授权后 `espanso restart` |
 | 面板出现但打字没反应 | tap 没装上，按键落到了目标 App | 检查 `doctor` 的辅助功能一项 |
+| 面板关不掉（`Esc` 无效） | 同上：面板不处理键盘，`Esc` 只走 tap | 点面板右上角 `✕`，或菜单栏第一项「关闭片段面板」；根治还是补授权 |
 | 面板里有字，目标 App 也有字 | tap 放行了事件 | 确认 `trigger_timeout_ms` 内完成两次按键 |
 | 回车没展开 | espanso 路径错误 / `match exec` 失败 | 看日志里的 `match exec 失败`，确认 `which espanso` |
 | 片段 0 条 | 配置目录找错 | `espanso path config` 应返回目录；`espanso path base` 返回的是 `base.yml` **文件**，不能当目录用 |

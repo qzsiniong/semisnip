@@ -35,6 +35,8 @@ pub fn open(cx: &mut App, state: Entity<AppState>) -> anyhow::Result<()> {
     match gpui_kit::open_window(options, cx, move |_window, _cx| view.clone()) {
         Ok((handle, _)) => {
             state.update(cx, |state, _| state.handle = Some(handle));
+            // 菜单第一项是「打开 / 关闭」二选一，开合之后必须重建。
+            crate::tray::refresh(cx);
             log::info!("面板已打开 {width}x{height}");
             Ok(())
         }
@@ -44,7 +46,15 @@ pub fn open(cx: &mut App, state: Entity<AppState>) -> anyhow::Result<()> {
 
 pub fn close(cx: &mut App, state: &Entity<AppState>) {
     let handle = state.update(cx, |state, _| state.handle.take());
-    if let Some(handle) = handle {
-        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    match handle {
+        Some(handle) => match handle.update(cx, |_, window, _| window.remove_window()) {
+            Ok(()) => log::info!("面板已收起"),
+            // 句柄失效说明窗口已经不在了（用户关掉了 / 之前收过一次）。
+            // 这里吞掉错误会让面板永远留在屏幕上，所以至少要留一行警告。
+            Err(err) => log::warn!("收起面板失败：{err}"),
+        },
+        // 正常路径不会走到：`state.open` 为真时一定先 open 过窗口。
+        None => log::debug!("收面板时没有窗口句柄，忽略"),
     }
+    crate::tray::refresh(cx);
 }

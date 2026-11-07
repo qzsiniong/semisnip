@@ -126,10 +126,10 @@ fn close(cx: &mut App, state: &Entity<AppState>) {
     // 先放开 swallow，再拆窗口：否则收尾期间用户按键会继续被吞。
     tap::set_panel_open(false);
     ui::window::close(cx, state);
-    state.update(cx, |state, cx| {
-        state.begin_close();
-        cx.notify();
-    });
+    // 这里**不发 `cx.notify()`**：窗口在 `window::close` 里已经摘掉了，
+    // 再通知重绘只会让 gpui 找不到窗口（日志里冒出 `window not found`）。
+    // 清状态本身不需要重绘——`open = false` 之后调度器自然降回慢轮询。
+    state.update(cx, |state, _| state.begin_close());
 }
 
 fn confirm(cx: &mut App, state: &Entity<AppState>, hit: crate::index::Hit) {

@@ -2,15 +2,55 @@
 //!
 //! 面板不接收焦点、不处理 gpui 的键盘事件——所有按键由 tap 直接改状态，
 //! 这里只负责把状态画出来（因此重绘靠 `cx.notify()` 驱动）。
+//!
+//! 唯一的鼠标交互是右上角的 `✕`：键盘那条路依赖 tap，tap 不在时它就是
+//! 全部（详见 [`close_button`]）。别的点击一律不处理。
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, IntoElement, Render, SharedString, div, px};
 
+use crate::app::event::{self, Event};
 use crate::app::state::AppState;
 
 const ROW_H: f32 = 30.0;
 const DETAIL_W: f32 = 286.0;
+
+/// 面板右上角的关闭按钮。
+///
+/// **面板不能只有一条关闭路径。** `Esc` 走的是全局键盘 tap：tap 没装上
+/// （没有「辅助功能」权限、或权限在重签之后失效）时，面板收不到任何按键——
+/// 而面板是 `NonactivatingPanel`，也不会因为点别处而自己消失。这时候如果
+/// 连个鼠标入口都没有，用户就只能强杀 daemon。
+///
+/// 所以这里给一个不依赖键盘、也不依赖权限的出口：点一下等于按 `Esc`，
+/// 统一投 [`Event::Cancel`] 交给 scheduler 收尾（放开吞键、删窗口、必要时回删
+/// 触发符），不在这里直接关窗——两条关闭路径必须走同一套收尾逻辑。
+fn close_button(muted: gpui_kit::Hsla, fg: gpui_kit::Hsla, hover_bg: gpui_kit::Hsla) -> AnyElement {
+    div()
+        .id("semisnip-close")
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_none()
+        .w(px(18.))
+        .h(px(18.))
+        .rounded_sm()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(muted)
+        .hover(move |style| style.bg(hover_bg).text_color(fg))
+        // 用 `on_click`（按下 + 抬起都落在按钮上）而不是 `on_mouse_down`：
+        // 按下就拆窗口的话，紧跟着的 mouseUp 会打到已经不存在的窗口上，
+        // gpui 会在日志里刷 `window not found`。
+        .on_click(|_, _, cx| {
+            if let Some(tx) = event::tx(cx) {
+                let _ = tx.send(Event::Cancel);
+            }
+        })
+        .child(SharedString::from("✕"))
+        .into_any_element()
+}
 
 impl Render for AppState {
     fn render(
@@ -135,7 +175,8 @@ impl Render for AppState {
                                 self.snapshot().len(),
                                 self.health_line()
                             ))),
-                    ),
+                    )
+                    .child(close_button(muted, fg, selection)),
             )
             .child(
                 // 列表 + 详情
