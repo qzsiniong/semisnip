@@ -38,6 +38,13 @@
       "minimum": 1,
       "maximum": 100
     },
+    "position": {
+      "title": "面板位置",
+      "description": "auto：贴着输入光标出现（下方放不下就翻到上方），水平居中于光标所在屏。center：屏幕可视区正中。两种模式都跟着「光标 / 当前窗口所在的屏幕」走，不是主显示器。",
+      "type": "string",
+      "default": "auto",
+      "enum": ["auto", "center"]
+    },
     "panel_width": {
       "title": "面板宽度",
       "description": "逻辑像素，最小 360。太窄预览会被挤成一列字。",

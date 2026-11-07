@@ -28,6 +28,10 @@ const FIELDS: &[(&str, &str)] = &[
         "nonactivating（目标 App 不失焦）｜activating（抢焦点，未实现）",
     ),
     ("max_results", "列表最多显示几条，1–100"),
+    (
+        "position",
+        "auto（贴着输入光标）｜center（屏幕可视区居中），都跟随光标所在屏",
+    ),
     ("panel_width", "面板宽度（逻辑像素）"),
     ("panel_height", "面板高度（逻辑像素）"),
     (

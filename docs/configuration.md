@@ -28,6 +28,7 @@ trigger: ;;
 trigger_timeout_ms: 800
 focus_mode: nonactivating
 max_results: 9
+position: auto
 panel_width: 720.0
 panel_height: 420.0
 post_exec_delay_ms: 12
@@ -72,6 +73,7 @@ semisnip config schema
 | `trigger_timeout_ms` | `800` | 两个触发键之间的最大间隔（200–3000） |
 | `focus_mode` | `"nonactivating"` | 预留项；`activating` 分支尚未实现 |
 | `max_results` | `9` | 候选条数上限（1–100） |
+| `position` | `"auto"` | `auto` 贴着输入光标；`center` 屏幕可视区居中。两者都跟随光标 / 当前窗口所在的那块屏 |
 | `panel_width` / `panel_height` | `720` / `420` | 面板尺寸（200–2000） |
 | `post_exec_delay_ms` | `12` | 回删到 `match exec` 之间的等待 |
 | `preview_clipboard` | `false` | 详情区是否显示剪贴板全文；`false` 时只显示字符数 |

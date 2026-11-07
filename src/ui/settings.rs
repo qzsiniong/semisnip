@@ -26,7 +26,7 @@ use gpui_kit::{
 };
 
 use crate::app::event::{self, Event};
-use crate::config::{Config, FocusMode};
+use crate::config::{Config, FocusMode, Position};
 use crate::paths;
 
 /// 设置窗口宽度。800 是 `Settings` 组件在「侧栏 200 + 两列字段」下刚好
@@ -353,9 +353,33 @@ fn general_page() -> SettingPage {
     ])
 }
 
-/// 外观：面板尺寸与详情栏。
+/// 外观：面板位置、尺寸与详情栏。
 fn appearance_page() -> SettingPage {
     SettingPage::new("外观").groups(vec![SettingGroup::new().title("面板").items(vec![
+            SettingItem::new(
+                "位置",
+                SettingField::<SharedString>::dropdown(
+                    vec![
+                        ("自动（贴着光标）".into(), "auto".into()),
+                        ("屏幕居中".into(), "center".into()),
+                    ],
+                    |cx| match editing(cx).position {
+                        Position::Auto => "auto".into(),
+                        Position::Center => "center".into(),
+                    },
+                    |value, cx| {
+                        edit(cx, |config| {
+                            config.position = if value.as_ref() == "center" {
+                                Position::Center
+                            } else {
+                                Position::Auto
+                            };
+                        })
+                    },
+                )
+                .default_value("auto"),
+            )
+            .description("自动：贴着输入光标弹出（下方放不下就翻到上方），水平居中于光标所在屏。居中：屏幕可视区正中。两种都跟随光标 / 当前窗口所在的那块屏。"),
             SettingItem::new(
                 "宽度",
                 SettingField::<f64>::number_input(

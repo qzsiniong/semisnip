@@ -49,6 +49,20 @@ pub enum FocusMode {
     Activating,
 }
 
+/// 面板出现在哪儿。
+///
+/// 两种都**不再是"主显示器居中"**：多屏环境下主屏往往不是用户正在打字的那块，
+/// 面板跑到另一块屏上等于没打开。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    /// 跟随插入点：垂直贴光标下方（下方不够就翻到上方），水平居中于该屏。
+    #[default]
+    Auto,
+    /// 居中：屏幕可视区的正中。
+    Center,
+}
+
 /// 全部偏好。
 ///
 /// `#[serde(default)]` 放在结构体上而不是逐字段：这样**任何**字段缺失（用户
@@ -63,6 +77,8 @@ pub struct Config {
     pub trigger_timeout_ms: u64,
     pub focus_mode: FocusMode,
     pub max_results: usize,
+    /// 面板位置策略，见 [`Position`]。
+    pub position: Position,
     pub panel_width: f32,
     pub panel_height: f32,
     /// 面板关闭到 `match exec` 之间的等待；非激活模式下可接近 0。
@@ -91,6 +107,7 @@ impl Default for Config {
             trigger_timeout_ms: 800,
             focus_mode: FocusMode::Nonactivating,
             max_results: 9,
+            position: Position::Auto,
             panel_width: 720.0,
             panel_height: 420.0,
             post_exec_delay_ms: 12,

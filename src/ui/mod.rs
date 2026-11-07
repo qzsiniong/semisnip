@@ -12,6 +12,7 @@
 //! 用户是特意来操作的，抢焦点才符合直觉。
 
 pub mod onboarding;
+pub mod place;
 pub mod settings;
 pub mod view;
 pub mod window;
