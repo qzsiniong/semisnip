@@ -91,16 +91,16 @@ fn register_actions(cx: &mut App, tx: Sender<Event>) {
 
     // 这三个只是"用系统默认程序打开文件"，不值得绕一圈事件循环。
     cx.on_action(|_: &OpenConfig, _: &mut App| {
-        reveal(crate::config::config_path(), crate::config::support_dir());
+        reveal(crate::paths::config_path(), crate::paths::config_dir());
     });
     cx.on_action(|_: &OpenMatchFile, _: &mut App| {
         reveal(
-            crate::espanso::paths::match_file(),
-            crate::espanso::paths::match_dir(),
+            crate::paths::espanso_match_file(),
+            crate::paths::espanso_match_dir(),
         );
     });
     cx.on_action(|_: &OpenLog, _: &mut App| {
-        reveal(crate::config::log_path(), crate::config::support_dir());
+        reveal(crate::paths::log_path(), crate::paths::config_dir());
     });
 }
 

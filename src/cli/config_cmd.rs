@@ -13,6 +13,7 @@ use clap::Subcommand;
 use serde_yaml::{Mapping, Value};
 
 use crate::config::{self, Config};
+use crate::paths;
 use crate::trigger::machine::TriggerConfig;
 
 /// 字段顺序即展示顺序；说明同时用作 `config keys` 的输出。
@@ -80,7 +81,7 @@ pub fn run(cmd: Option<ConfigCmd>) -> ExitCode {
     match cmd.unwrap_or(ConfigCmd::Show) {
         ConfigCmd::Show => show(),
         ConfigCmd::Path => {
-            println!("{}", config::config_path().display());
+            println!("{}", paths::config_path().display());
             ExitCode::SUCCESS
         }
         ConfigCmd::Schema => match config::ensure_schema() {
@@ -110,7 +111,7 @@ fn fail(message: &str) -> ExitCode {
 }
 
 fn show() -> ExitCode {
-    let path = config::config_path();
+    let path = paths::config_path();
     // 先 load：它可能顺手把旧的 config.json 迁移成 config.yml，
     // 之后再判断「文件不存在」才不会自相矛盾。
     let effective = serde_yaml::to_value(Config::load()).unwrap_or(Value::Null);
@@ -240,7 +241,7 @@ fn reset() -> ExitCode {
     let config = Config::default();
     match config.save() {
         Ok(()) => {
-            println!("已重置为默认值：{}", config::config_path().display());
+            println!("已重置为默认值：{}", paths::config_path().display());
             hint_restart();
             ExitCode::SUCCESS
         }
@@ -249,7 +250,7 @@ fn reset() -> ExitCode {
 }
 
 fn edit() -> ExitCode {
-    let path = config::config_path();
+    let path = paths::config_path();
     if !path.exists() {
         let _ = Config::default().save();
     }
@@ -396,7 +397,7 @@ fn same_value(left: Option<&Value>, right: &Value) -> bool {
 }
 
 fn read_file() -> Option<Value> {
-    let raw = std::fs::read_to_string(config::config_path()).ok()?;
+    let raw = std::fs::read_to_string(paths::config_path()).ok()?;
     serde_yaml::from_str(&raw).ok()
 }
 

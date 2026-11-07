@@ -17,7 +17,7 @@ use clap_complete::Shell;
 
 use super::{command, fail};
 
-const BIN: &str = "semisnip";
+const BIN: &str = crate::paths::BIN_NAME;
 const BEGIN: &str = "# >>> semisnip completion >>>";
 const END: &str = "# <<< semisnip completion <<<";
 
@@ -96,7 +96,7 @@ struct Plan {
 
 impl Plan {
     fn build(shell: Shell) -> Result<Self, String> {
-        let dir = completions_dir();
+        let dir = crate::paths::completions_dir();
         let quote = |path: &Path| format!("\"{}\"", path.display());
         match shell {
             Shell::Bash => {
@@ -369,11 +369,7 @@ fn detect_shell() -> Result<Shell, String> {
 }
 
 fn home() -> Result<PathBuf, String> {
-    dirs::home_dir().ok_or_else(|| "找不到家目录".to_string())
-}
-
-fn completions_dir() -> PathBuf {
-    crate::config::support_dir().join("completions")
+    crate::paths::home_opt().ok_or_else(|| "找不到家目录".to_string())
 }
 
 /// macOS 的 Terminal / iTerm 默认起的是 login shell，读 `.bash_profile`；

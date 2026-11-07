@@ -19,6 +19,7 @@ pub mod handoff;
 pub mod index;
 pub mod ipc;
 pub mod mark;
+pub mod paths;
 pub mod preview;
 pub mod search;
 pub mod tray;

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::proto::{Request, Response};
-use crate::{config, usage};
+use crate::{paths, usage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
 
@@ -19,7 +19,7 @@ fn connect(path: &Path, timeout: Duration) -> anyhow::Result<UnixStream> {
 }
 
 pub fn call(req: &Request, timeout: Duration) -> anyhow::Result<Response> {
-    let path = config::socket_path();
+    let path = paths::socket_path();
     let mut stream = connect(&path, timeout)?;
     let mut line = serde_json::to_string(req)?;
     line.push('\n');

@@ -9,9 +9,9 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 
 use crate::app::event::Event;
-use crate::espanso::paths;
 use crate::index::loader::{SnippetSource, YamlSource};
 use crate::index::model::Snapshot;
+use crate::paths;
 
 pub struct IndexService {
     snap: ArcSwap<Snapshot>,
@@ -24,7 +24,7 @@ impl IndexService {
         Arc::new(Self {
             snap: ArcSwap::from_pointee(Snapshot::empty()),
             reloading: AtomicBool::new(false),
-            root: paths::config_root(),
+            root: paths::espanso_root(),
         })
     }
 

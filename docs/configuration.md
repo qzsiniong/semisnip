@@ -3,11 +3,17 @@
 ## 位置
 
 ```
-~/Library/Application Support/semisnip/config.yml        配置
-~/Library/Application Support/semisnip/config.schema.json  schema（给编辑器用）
+~/Library/Application Support/semisnip/config.yml          偏好
+~/Library/Application Support/semisnip/config.schema.json  编辑器补全用
+~/Library/Application Support/semisnip/usage.json          使用频率（内部格式，不用手改）
+~/Library/Application Support/semisnip/semisnip.log        日志
+~/Library/Application Support/semisnip/completions/        shell 补全脚本
+~/Library/Caches/semisnip/semisnip.sock                    daemon socket
 ```
 
 `semisnip install` 时生成；不存在时用默认值。写入策略是**先落临时文件再改名**，daemon 不会读到半截 YAML。
+
+目录按系统约定来，不自己拼：配置目录问 `dirs::config_dir()`（macOS 即 `~/Library/Application Support`），缓存目录问 `dirs::cache_dir()`（`~/Library/Caches`）。**所有路径都定义在 `src/paths.rs` 一个文件里**，业务代码只许调用 `paths::config_path()` 这类函数，不许出现 `.join("Library")` 这样的字面量。
 
 ## 长这样
 
@@ -52,7 +58,7 @@ schema 由二进制内嵌（`assets/config.schema.json`），`install` 与每次
 semisnip config schema
 ```
 
-用**相对路径**而不是绝对路径，是因为 `~/Library/Application Support` 里有空格，编辑器解析绝对路径容易歪。schema 与配置永远同目录，相对引用最稳。
+用**相对路径**而不是绝对路径：schema 与配置永远同目录，目录整体搬走（换机器、改 `XDG_CONFIG_HOME`）之后这行提示不会指向旧位置。
 
 `schema` 与代码的一致性有单测兜底：字段集合、每项 `default`、是否都有 `description` / `type` 都会比一遍，改结构体忘了改 schema 会直接测试失败。
 
@@ -110,12 +116,6 @@ launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
 
 ## semisnip 自己有哪些文件
 
-```
-~/Library/Application Support/semisnip/config.yml          偏好
-~/Library/Application Support/semisnip/config.schema.json  编辑器补全用
-~/Library/Application Support/semisnip/usage.json          使用频率（内部格式，不用手改）
-~/Library/Application Support/semisnip/semisnip.log        日志
-~/Library/Caches/semisnip/semisnip.sock                    daemon socket
-```
+见上文「位置」。两个目录各管一摊：`Application Support/semisnip` 是可以备份、值得手改的东西，`Caches/semisnip` 里的 socket 删了也只会让 daemon 重建。
 
 片段永远只存在于 espanso 的 `match/**/*.yml` 里。semisnip 唯一写进那个目录的文件是 `semisnip.yml`（降级触发定义），见 [命令行 · match](cli.md#match)。

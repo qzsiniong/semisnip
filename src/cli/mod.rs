@@ -18,11 +18,11 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::espanso::cli::EspansoCli;
-use crate::espanso::paths;
 use crate::index::loader::{SnippetSource, YamlSource};
 use crate::ipc::{client, proto::Origin};
+use crate::paths;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -199,7 +199,7 @@ fn trigger(origin: Origin) -> ExitCode {
 }
 
 fn install() -> ExitCode {
-    config::ensure_dirs();
+    paths::ensure_dirs();
     let config = Config::load();
     let _ = config.save();
 
@@ -222,7 +222,7 @@ fn install() -> ExitCode {
     );
     println!("  3. 跑 `semisnip doctor` 确认每项都打勾");
     // 二进制藏在 .app 里，没软链的话 shell 找不到命令，这一步经常被漏掉。
-    if !std::path::Path::new("/usr/local/bin/semisnip").exists() {
+    if !paths::cli_link().exists() {
         println!();
         println!("提示：`semisnip` 还不在 PATH 上，补一条软链后命令才可用：");
         println!("  sudo ln -sf {exe} /usr/local/bin/semisnip");
@@ -241,12 +241,12 @@ pub(crate) fn write_match_file() -> anyhow::Result<std::path::PathBuf> {
     let exe = resolve_exe(std::env::current_exe()?);
     let trigger = Config::load().trigger;
 
-    let match_dir = paths::match_dir();
+    let match_dir = paths::espanso_match_dir();
     std::fs::create_dir_all(&match_dir)?;
 
-    let target = paths::match_file();
+    let target = paths::espanso_match_file();
     if target.exists() {
-        let backup = match_dir.join(format!("{}.bak", paths::MATCH_FILE));
+        let backup = match_dir.join(format!("{}.bak", paths::ESPANSO_MATCH_FILE));
         std::fs::copy(&target, &backup)?;
         println!("已备份原文件到 {}", backup.display());
     }
@@ -304,7 +304,7 @@ fn doctor() -> ExitCode {
         }
     }
 
-    let root = paths::config_root();
+    let root = paths::espanso_root();
     println!(
         "  配置目录     {} {}",
         if root.exists() { "✅" } else { "⚠️ " },
@@ -336,7 +336,7 @@ fn doctor() -> ExitCode {
         }
     }
 
-    let socket = config::socket_path();
+    let socket = paths::socket_path();
     let alive = client::ping().is_ok();
     println!(
         "  daemon       {} {}",
@@ -423,8 +423,8 @@ impl Write for Tee {
 }
 
 pub fn init_logging() {
-    config::ensure_dirs();
-    let path = config::log_path();
+    paths::ensure_dirs();
+    let path = paths::log_path();
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

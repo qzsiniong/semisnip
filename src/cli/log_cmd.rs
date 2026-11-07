@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::config;
+use crate::paths;
 
 const DEFAULT_LINES: usize = 40;
 /// 一次最多回看 1 MiB：日志滚很久也不会把内存吃穿。
@@ -88,7 +88,7 @@ struct Options {
 }
 
 pub fn run(args: LogArgs) -> ExitCode {
-    let path = config::log_path();
+    let path = paths::log_path();
     match args.action {
         Some(LogAction::Path) => {
             println!("{}", path.display());

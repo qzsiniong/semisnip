@@ -14,7 +14,7 @@ use serde_yaml::Value;
 
 use super::fail;
 use crate::config::Config;
-use crate::espanso::paths;
+use crate::paths;
 
 #[derive(Debug, Subcommand)]
 pub enum MatchCmd {
@@ -37,7 +37,7 @@ pub enum MatchCmd {
 pub fn run(cmd: Option<MatchCmd>) -> ExitCode {
     match cmd.unwrap_or(MatchCmd::Show) {
         MatchCmd::Path => {
-            println!("{}", paths::match_file().display());
+            println!("{}", paths::espanso_match_file().display());
             ExitCode::SUCCESS
         }
         MatchCmd::Show => show(),
@@ -50,12 +50,12 @@ pub fn run(cmd: Option<MatchCmd>) -> ExitCode {
 fn missing() -> ExitCode {
     fail(&format!(
         "{} 还不存在，先执行 `semisnip install`（或 `semisnip match regenerate`）",
-        paths::match_file().display()
+        paths::espanso_match_file().display()
     ))
 }
 
 fn show() -> ExitCode {
-    let path = paths::match_file();
+    let path = paths::espanso_match_file();
     match std::fs::read_to_string(&path) {
         Ok(text) => {
             // 原样输出，方便 `semisnip match show | pbcopy`，不加任何装饰
@@ -71,7 +71,7 @@ fn show() -> ExitCode {
 }
 
 fn open(reveal: bool) -> ExitCode {
-    let path = paths::match_file();
+    let path = paths::espanso_match_file();
     if !path.exists() {
         return missing();
     }
@@ -109,7 +109,7 @@ fn open(reveal: bool) -> ExitCode {
 }
 
 fn edit() -> ExitCode {
-    let path = paths::match_file();
+    let path = paths::espanso_match_file();
     if !path.exists() {
         return missing();
     }

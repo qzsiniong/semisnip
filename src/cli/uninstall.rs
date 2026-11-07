@@ -11,11 +11,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use crate::config;
-
-const APP: &str = "/Applications/Semisnip.app";
-const LINK: &str = "/usr/local/bin/semisnip";
-const LABEL: &str = "com.semisnip.daemon";
+use crate::paths;
 
 #[derive(Debug, Args)]
 pub struct UninstallArgs {
@@ -72,36 +68,36 @@ pub fn run(args: UninstallArgs) -> ExitCode {
     let mut entries = vec![
         Entry {
             label: "LaunchAgent（开机自启）",
-            path: launch_agent_path(),
+            path: paths::launch_agent_plist(),
             kind: Kind::File,
         },
         Entry {
             label: "espanso 降级触发定义",
-            path: crate::espanso::paths::match_file(),
+            path: paths::espanso_match_file(),
             kind: Kind::File,
         },
         Entry {
             label: "CLI 软链",
-            path: PathBuf::from(LINK),
+            path: paths::cli_link(),
             kind: Kind::Link,
         },
     ];
     if !keep_app {
         entries.push(Entry {
             label: "应用程序",
-            path: PathBuf::from(APP),
+            path: paths::app_bundle(),
             kind: Kind::Dir,
         });
     }
     if purge {
         entries.push(Entry {
             label: "配置 / 使用频率 / 日志",
-            path: config::support_dir(),
+            path: paths::config_dir(),
             kind: Kind::Dir,
         });
         entries.push(Entry {
             label: "socket 与缓存",
-            path: config::cache_dir(),
+            path: paths::cache_dir(),
             kind: Kind::Dir,
         });
     }
@@ -179,8 +175,8 @@ pub fn run(args: UninstallArgs) -> ExitCode {
     }
 
     println!();
-    if config::config_path().exists() {
-        println!("配置与日志保留在 {}", config::support_dir().display());
+    if paths::config_path().exists() {
+        println!("配置与日志保留在 {}", paths::config_dir().display());
         println!("想彻底清干净：semisnip uninstall --yes --purge");
     } else {
         println!("配置、使用频率与日志已删除。");
@@ -195,17 +191,9 @@ pub fn run(args: UninstallArgs) -> ExitCode {
     }
 }
 
-fn launch_agent_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{LABEL}.plist"))
-}
-
 fn points_into_app(link: &Path) -> bool {
     std::fs::read_link(link)
-        .map(|target| target.starts_with(APP))
+        .map(|target| target.starts_with(paths::app_bundle()))
         .unwrap_or(false)
 }
 
@@ -214,7 +202,7 @@ fn remove(entry: &Entry) -> std::io::Result<()> {
         Kind::File | Kind::Link => std::fs::remove_file(&entry.path),
         Kind::Dir => {
             // 纵深防御：只允许删自己名下的目录，别让路径拼错变成删家目录。
-            let safe = entry.path.ends_with("semisnip") || entry.path == Path::new(APP);
+            let safe = entry.path.ends_with(paths::APP_DIR) || entry.path == paths::app_bundle();
             if !safe {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -229,7 +217,7 @@ fn remove(entry: &Entry) -> std::io::Result<()> {
 fn daemon_pids() -> Option<Vec<i32>> {
     let out = std::process::Command::new("pgrep")
         .arg("-x")
-        .arg("semisnip")
+        .arg(paths::BIN_NAME)
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -262,7 +250,7 @@ fn stop_daemon() -> Stop {
         .map(|text| text.trim().to_string());
     if let Some(uid) = uid
         && let Ok(out) = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/{LABEL}")])
+            .args(["bootout", &format!("gui/{uid}/{}", paths::LABEL)])
             .output()
     {
         stop.booted_out = out.status.success();

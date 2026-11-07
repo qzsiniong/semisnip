@@ -9,15 +9,15 @@ use std::sync::mpsc::Sender;
 
 use super::proto::{Request, Response};
 use crate::app::event::Event;
-use crate::config;
+use crate::paths;
 
 /// 回答「daemon 的 tap 真的装上了吗」。由调用方注入，ipc 不认识 trigger。
 pub type TapProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// 绑定 socket 并起监听线程。
 pub fn serve(tx: Sender<Event>, tap_ready: TapProbe) -> Result<PathBuf, ServeError> {
-    config::ensure_dirs();
-    let path = config::socket_path();
+    paths::ensure_dirs();
+    let path = paths::socket_path();
 
     // 单实例：能连上就说明有活的 daemon；连不上说明是上次崩溃留下的死文件。
     if path.exists() {

@@ -1,4 +1,4 @@
-//! 自有配置与路径。
+//! 自有配置。
 //!
 //! 片段本身永远只存在 espanso 的 YAML 里；这里只放 semisnip 自己的偏好，
 //! 保证卸载 semisnip 不会动用户任何片段数据。
@@ -6,17 +6,17 @@
 //! 配置用 YAML 而不是 JSON：手改时能写注释、写错有行列号，文件头那行
 //! `# yaml-language-server: $schema=` 还能让编辑器（VS Code + YAML 扩展、
 //! JetBrains 系）边写边补全、当场标红。schema 与配置**同目录**、用相对路径
-//! 引用——`Application Support` 里有空格，绝对路径容易被编辑器解析歪。
+//! 引用：目录整体搬走（换机器、改 `$HOME`）也不会指向旧位置。
+//!
+//! **这个文件里没有路径**。所有目录、文件名都在 [`crate::paths`]，
+//! 这里只负责「配置长什么样、怎么读写」。
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 配置文件名。改这个常量等于改用户路径，慎重。
-pub const CONFIG_FILE: &str = "config.yml";
-/// 与配置同目录的 schema 文件名，供 `$schema=./config.schema.json` 解析。
-pub const SCHEMA_FILE: &str = "config.schema.json";
+use crate::paths::{SCHEMA_FILE, config_dir, config_path};
 
 /// 编译期嵌入：装好的 app 自带 schema，不依赖仓库目录，也不会和代码漂移。
 const SCHEMA: &str = include_str!("../assets/config.schema.json");
@@ -175,7 +175,7 @@ fn write_yaml_to(path: &Path, value: &serde_yaml::Value) -> anyhow::Result<()> {
 
 /// 把 schema 落到配置旁边；内容一致就不动 mtime。
 pub fn ensure_schema() -> anyhow::Result<PathBuf> {
-    ensure_schema_in(&support_dir())
+    ensure_schema_in(&config_dir())
 }
 
 fn ensure_schema_in(dir: &Path) -> anyhow::Result<PathBuf> {
@@ -185,52 +185,6 @@ fn ensure_schema_in(dir: &Path) -> anyhow::Result<PathBuf> {
         std::fs::write(&path, SCHEMA)?;
     }
     Ok(path)
-}
-
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-}
-
-/// 三个目录都用这个名字：`Application Support`、`Caches`、日志文件名。
-const APP_DIR: &str = "semisnip";
-
-/// `~/Library/Application Support/semisnip`
-pub fn support_dir() -> PathBuf {
-    home()
-        .join("Library")
-        .join("Application Support")
-        .join(APP_DIR)
-}
-
-/// `~/Library/Caches/semisnip`
-pub fn cache_dir() -> PathBuf {
-    home().join("Library").join("Caches").join(APP_DIR)
-}
-
-pub fn config_path() -> PathBuf {
-    support_dir().join(CONFIG_FILE)
-}
-
-pub fn schema_path() -> PathBuf {
-    support_dir().join(SCHEMA_FILE)
-}
-
-pub fn usage_path() -> PathBuf {
-    support_dir().join("usage.json")
-}
-
-pub fn log_path() -> PathBuf {
-    support_dir().join("semisnip.log")
-}
-
-/// daemon 与 CLI 的会合点。放在 Cache 下：系统可清理，重建无副作用。
-pub fn socket_path() -> PathBuf {
-    cache_dir().join("semisnip.sock")
-}
-
-pub fn ensure_dirs() {
-    let _ = std::fs::create_dir_all(support_dir());
-    let _ = std::fs::create_dir_all(cache_dir());
 }
 
 #[cfg(test)]
@@ -258,8 +212,8 @@ mod tests {
             text.contains("# yaml-language-server: $schema=./config.schema.json"),
             "缺少编辑器认的那行提示：\n{text}"
         );
-        // 相对路径：绝对路径里有 "Application Support" 的空格
-        assert!(!text.contains("Application Support"));
+        // 相对路径：写死绝对路径的话，配置目录一搬就指到旧地方去了
+        assert!(!text.contains("$schema=/"), "抬头不该出现绝对路径");
 
         let back = Config::from_yaml(&text).unwrap();
         assert_eq!(back.trigger, ",,");
@@ -292,7 +246,7 @@ mod tests {
     #[test]
     fn legacy_json_is_migrated_and_kept_as_backup() {
         let dir = temp_dir("migrate");
-        let yml = dir.join(CONFIG_FILE);
+        let yml = dir.join(crate::paths::CONFIG_FILE);
         std::fs::write(
             dir.join("config.json"),
             r#"{"trigger":",,","max_results":3}"#,

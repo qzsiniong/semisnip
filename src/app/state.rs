@@ -8,10 +8,11 @@ use std::sync::Arc;
 use gpui_kit::{AnyWindowHandle, Context, Entity, Global};
 
 use crate::app::event::KeyMsg;
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::handoff;
 use crate::index::service::IndexService;
 use crate::index::{Hit, Snapshot};
+use crate::paths;
 use crate::preview::{self, PreviewDoc, vars::PreviewCtx};
 use crate::search::{Query, SearchIndex, rank};
 use crate::trigger::keymap;
@@ -49,7 +50,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(cx: &mut Context<Self>, index: Arc<IndexService>) -> Self {
         let config = Config::load();
-        let usage = Usage::load(&config::usage_path());
+        let usage = Usage::load(&paths::usage_path());
         let snapshot = index.snapshot();
         let search = SearchIndex::build(&snapshot);
         let built_at = snapshot.built_at_ms;
@@ -213,7 +214,7 @@ impl AppState {
 
     pub fn record_use(&mut self, trigger: &str) {
         self.usage.record(trigger);
-        self.usage.flush_if_dirty(&config::usage_path());
+        self.usage.flush_if_dirty(&paths::usage_path());
     }
 
     /// 一行健康状态（面板头部右侧）。
