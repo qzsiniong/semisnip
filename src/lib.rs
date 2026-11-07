@@ -1,6 +1,6 @@
-//! snipshot —— espanso 的片段检索层。
+//! semisnip —— espanso 的片段检索层。
 //!
-//! 分工：**snipshot 只负责"选"，espanso 负责"展"**。
+//! 分工：**semisnip 只负责"选"，espanso 负责"展"**。
 //! 任意输入框里打 `;;` → 非激活面板 → 过滤 → 详情预览 → 回车交给
 //! `espanso match exec -t <trigger>` 求值并注入。
 //!
@@ -51,7 +51,7 @@ pub fn run_daemon() {
         }
         Err(ipc::server::ServeError::Io(err)) => {
             log::error!("IPC 启动失败：{err}");
-            eprintln!("snipshot: {err}");
+            eprintln!("semisnip: {err}");
             std::process::exit(1);
         }
     }

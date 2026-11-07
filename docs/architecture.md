@@ -5,7 +5,7 @@
 ```mermaid
 flowchart TB
     key["任意 App 输入框<br/>敲 ;;"] --> tap["CGEventTap<br/>只认物理键码"]
-    cli["snipshot trigger<br/>UDS + NDJSON"]
+    cli["semisnip trigger<br/>UDS + NDJSON"]
     tray["菜单栏图标<br/>GPUI action"]
     yml["$ESPANSO_CONFIG<br/>match/**/*.yml"]
 
@@ -30,7 +30,7 @@ flowchart TB
     espanso --> target["目标输入框<br/>光标位置从未改变"]
 ```
 
-三条输入（tap 吞键、CLI 的 UDS 消息、菜单栏的 GPUI action）走的是同一个事件通道，所以「敲 `;;`」「`snipshot trigger`」「点菜单」在 daemon 看来没有区别。daemon 内部单向：索引 → 检索 → 预览，选中后交给回传。模块之间只靠 `Snapshot` 和一个 `matched_trigger` 字符串耦合。
+三条输入（tap 吞键、CLI 的 UDS 消息、菜单栏的 GPUI action）走的是同一个事件通道，所以「敲 `;;`」「`semisnip trigger`」「点菜单」在 daemon 看来没有区别。daemon 内部单向：索引 → 检索 → 预览，选中后交给回传。模块之间只靠 `Snapshot` 和一个 `matched_trigger` 字符串耦合。
 
 ## 模块与边界
 
@@ -46,7 +46,7 @@ flowchart TB
 | 配置 | `config.rs`、`cli/config_cmd.rs` | YAML + 内嵌 JSON Schema（`assets/config.schema.json`）；只碰自己的偏好，不碰 espanso 的 YAML |
 | 界面 | `ui/window.rs`、`ui/view.rs` | `WindowKind::PopUp`（NSPanel + NonactivatingPanel），只渲染，不处理键盘 |
 | 菜单栏 | `tray.rs` | NSStatusItem + 原生菜单；模板图（深浅色自动反色），菜单项经 GPUI action 回到 scheduler 的事件通道 |
-| 图标 | `mark.rs` | 「斜体 `I` + `;;`」的解析式几何；运行期画菜单栏图标、构建期画应用图标，**同一份文件** |
+| 图标 | `mark.rs` | 「斜体 `I` + `;;`」的解析式几何；`sample()` 会区分字母与触发符，所以应用图标能双色、菜单栏仍走单色模板图。运行期与构建期编译的是**同一份文件** |
 | 装配 | `app/state.rs`、`app/scheduler.rs`、`app/event.rs` | 状态机与事件循环 |
 | 命令行 | `cli/mod.rs`、`cli/match_cmd.rs`、`cli/completion.rs`、`cli/config_cmd.rs`、`cli/log_cmd.rs`、`cli/uninstall.rs` | clap 定义命令树；补全脚本由同一份定义生成，不会和实现走偏 |
 
@@ -92,8 +92,8 @@ sequenceDiagram
 
 ## 两条回传协议
 
-- **snipshot → espanso**：只有一个 `espanso match exec -t <trigger>`。协议里唯一必须精确传递的是「命中了哪个 trigger」，不是片段 id。
-- **espanso → snipshot**：仅在降级路径存在。没有辅助功能权限时，espanso 的 shell match 调用 `snipshot trigger --origin espanso` 唤醒面板。该 match 的 stdout 必须严格为空。
+- **semisnip → espanso**：只有一个 `espanso match exec -t <trigger>`。协议里唯一必须精确传递的是「命中了哪个 trigger」，不是片段 id。
+- **espanso → semisnip**：仅在降级路径存在。没有辅助功能权限时，espanso 的 shell match 调用 `semisnip trigger --origin espanso` 唤醒面板。该 match 的 stdout 必须严格为空。
 
 ## 数据源
 
@@ -101,7 +101,7 @@ sequenceDiagram
 - `_` 开头的文件不加载（`_manifest.yml` 靠这条排除）
 - `packages/` 下的片段同样会被收进来
 - 启动时与 `espanso match list --json` 做一次交叉校验，以 espanso 眼中的 trigger 集合为准
-- 监听 `match/` 目录，300ms 防抖后后台重建索引；也可以 `snipshot reload` 手动刷新
+- 监听 `match/` 目录，300ms 防抖后后台重建索引；也可以 `semisnip reload` 手动刷新
 - 重建失败时保留旧快照，面板不会突然空掉
 
 espanso 的 `filter_class` / `filter_exec` 这类 app-specific 规则目前**没有复刻**，靠 `match list --json` 的交叉校验兜底。

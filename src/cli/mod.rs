@@ -4,7 +4,7 @@
 //! 轻量进程——`trigger` 会被 espanso 的 shell 变量同步调用。
 //!
 //! 不带子命令时**只打印帮助**，不再默默起 daemon：一个会常驻、会抢键盘的
-//! 进程不该是 `snipshot` 的默认动作。daemon 由 LaunchAgent 负责拉起。
+//! 进程不该是 `semisnip` 的默认动作。daemon 由 LaunchAgent 负责拉起。
 
 mod completion;
 mod config_cmd;
@@ -26,19 +26,19 @@ use crate::ipc::{client, proto::Origin};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "snipshot",
+    name = "semisnip",
     version,
     about = "espanso 的片段检索层：非激活面板负责选，espanso 负责展",
     subcommand_required = true,
     arg_required_else_help = true,
     max_term_width = 92,
     after_help = "常用：
-  snipshot install               接入 espanso（写入降级触发的 match 定义）
-  snipshot match edit            看/改写进 espanso 的 snipshot.yml（退出时校验）
-  snipshot completion            给当前 shell 装上补全（再也不用记子命令）
-  snipshot doctor                体检：espanso / 权限 / 索引 / daemon
-  snipshot config set trigger ,, 把触发串改成 `,,`
-  snipshot log -n 100 -g 触发     回看最近的日志"
+  semisnip install               接入 espanso（写入降级触发的 match 定义）
+  semisnip match edit            看/改写进 espanso 的 semisnip.yml（退出时校验）
+  semisnip completion            给当前 shell 装上补全（再也不用记子命令）
+  semisnip doctor                体检：espanso / 权限 / 索引 / daemon
+  semisnip config set trigger ,, 把触发串改成 `,,`
+  semisnip log -n 100 -g 触发     回看最近的日志"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -59,13 +59,13 @@ enum Command {
     Reload,
     /// 接入 espanso：写入触发定义，并给出后续步骤
     Install,
-    /// 查看/编辑写进 espanso 的 snipshot.yml
+    /// 查看/编辑写进 espanso 的 semisnip.yml
     #[command(alias = "yml")]
     Match {
         #[command(subcommand)]
         action: Option<match_cmd::MatchCmd>,
     },
-    /// 卸载 snipshot 自己装进去的东西
+    /// 卸载 semisnip 自己装进去的东西
     Uninstall(uninstall::UninstallArgs),
     /// 查看与修改配置
     Config {
@@ -158,7 +158,7 @@ pub fn run() -> ExitCode {
 
 /// 把 clap 的错误转成退出码。
 ///
-/// 关键区分：`snipshot`（无参数）走的是 `DisplayHelpOnMissingArgumentOrSubcommand`，
+/// 关键区分：`semisnip`（无参数）走的是 `DisplayHelpOnMissingArgumentOrSubcommand`，
 /// 那是"想看看怎么用"，不是错误，退出码必须是 0。
 fn report(err: clap::Error) -> ExitCode {
     let code = classify(err.kind());
@@ -171,7 +171,7 @@ fn classify(kind: clap::error::ErrorKind) -> ExitCode {
     use clap::error::ErrorKind;
 
     match kind {
-        // `snipshot`（无参数）会落到第二项：那是"想看看怎么用"，不是错误。
+        // `semisnip`（无参数）会落到第二项：那是"想看看怎么用"，不是错误。
         ErrorKind::DisplayHelp
         | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         | ErrorKind::DisplayVersion => ExitCode::SUCCESS,
@@ -180,7 +180,7 @@ fn classify(kind: clap::error::ErrorKind) -> ExitCode {
 }
 
 pub(crate) fn fail(message: &str) -> ExitCode {
-    eprintln!("snipshot: {message}");
+    eprintln!("semisnip: {message}");
     ExitCode::FAILURE
 }
 
@@ -212,27 +212,27 @@ fn install() -> ExitCode {
 
     let exe = std::env::current_exe()
         .map(|exe| exe.display().to_string())
-        .unwrap_or_else(|_| "<snipshot>".into());
+        .unwrap_or_else(|_| "<semisnip>".into());
     println!("下一步：");
     println!("  1. espanso restart        （让新 match 生效）");
-    println!("  2. 把 Snipshot.app 加进「系统设置 → 隐私与安全性 → 辅助功能」");
+    println!("  2. 把 Semisnip.app 加进「系统设置 → 隐私与安全性 → 辅助功能」");
     println!(
         "     —— 没有这项权限时，`{}` 会退化成 espanso shell 触发",
         config.trigger
     );
-    println!("  3. 跑 `snipshot doctor` 确认四态正常");
+    println!("  3. 跑 `semisnip doctor` 确认每项都打勾");
     // 二进制藏在 .app 里，没软链的话 shell 找不到命令，这一步经常被漏掉。
-    if !std::path::Path::new("/usr/local/bin/snipshot").exists() {
+    if !std::path::Path::new("/usr/local/bin/semisnip").exists() {
         println!();
-        println!("提示：`snipshot` 还不在 PATH 上，补一条软链后命令才可用：");
-        println!("  sudo ln -sf {exe} /usr/local/bin/snipshot");
+        println!("提示：`semisnip` 还不在 PATH 上，补一条软链后命令才可用：");
+        println!("  sudo ln -sf {exe} /usr/local/bin/semisnip");
     }
     ExitCode::SUCCESS
 }
 
 /// 把 match 定义写进 espanso 的 match 目录，已存在则先备份。
 ///
-/// `install` 和 `snipshot match regenerate` 走同一条路径：两边各写一份迟早
+/// `install` 和 `semisnip match regenerate` 走同一条路径：两边各写一份迟早
 /// 会写到不一致，而这份文件错了的表现是「`;;` 时好时坏」，极难查。
 pub(crate) fn write_match_file() -> anyhow::Result<std::path::PathBuf> {
     // current_exe 返回的是 argv[0] 那条路径，可能只是 /usr/local/bin 的软链。
@@ -255,6 +255,7 @@ pub(crate) fn write_match_file() -> anyhow::Result<std::path::PathBuf> {
         &target,
         render_match_file(&exe.display().to_string(), &trigger),
     )?;
+
     Ok(target)
 }
 
@@ -263,21 +264,21 @@ fn resolve_exe(exe: std::path::PathBuf) -> std::path::PathBuf {
     exe.canonicalize().unwrap_or(exe)
 }
 
-/// 生成降级路径的 match 定义：tap 不可用时由 espanso 唤醒 snipshot。
+/// 生成降级路径的 match 定义：tap 不可用时由 espanso 唤醒 semisnip。
 pub fn render_match_file(exe: &str, trigger: &str) -> String {
     format!(
-        r#"# 由 `snipshot install` 生成。
+        r#"# 由 `semisnip install` 生成。
 #
-# 作用：当 snipshot 的键盘 tap 不可用（缺辅助功能权限）时，
+# 作用：当 semisnip 的键盘 tap 不可用（缺辅助功能权限）时，
 # 由 espanso 的 shell 扩展唤醒面板。tap 正常工作时，`{trigger}` 的最后一个键
-# 已被 snipshot 吞掉，espanso 根本看不到这个 trigger，本文件不会生效。
+# 已被 semisnip 吞掉，espanso 根本看不到这个 trigger，本文件不会生效。
 #
 # 注意：shell 变量的 stdout 会被原样注入文档，所以命令必须保持静默。
 # yaml-language-server: $schema=https://raw.githubusercontent.com/espanso/espanso/dev/schemas/match.schema.json
 matches:
   - trigger: "{trigger}"
     replace: "{{{{output}}}}"
-    label: "snipshot · 打开片段面板（降级触发）"
+    label: "semisnip · 打开片段面板（降级触发）"
     vars:
       - name: output
         type: shell
@@ -292,7 +293,7 @@ matches:
 fn doctor() -> ExitCode {
     let mut problems = 0;
 
-    println!("snipshot {}", env!("CARGO_PKG_VERSION"));
+    println!("semisnip {}", env!("CARGO_PKG_VERSION"));
 
     let cli = EspansoCli::discover();
     match cli.version() {
@@ -343,7 +344,7 @@ fn doctor() -> ExitCode {
         if alive {
             format!("运行中（{}）", socket.display())
         } else {
-            "未运行：执行 `snipshot daemon` 或让 LaunchAgent 拉起".to_string()
+            "未运行：执行 `semisnip daemon` 或让 LaunchAgent 拉起".to_string()
         }
     );
     if !alive {
@@ -443,7 +444,7 @@ mod tests {
 
     #[test]
     fn match_file_is_silent_by_contract() {
-        let yaml = render_match_file("/Applications/Snipshot.app/Contents/MacOS/snipshot", ";;");
+        let yaml = render_match_file("/Applications/Semisnip.app/Contents/MacOS/semisnip", ";;");
         assert!(
             yaml.contains("2>>/dev/null"),
             "命令必须吞掉 stdout 之外的噪声"
@@ -458,7 +459,7 @@ mod tests {
     #[test]
     fn bare_invocation_asks_for_help_instead_of_daemon() {
         // 默认动作必须是"解释自己"，而不是偷偷起一个常驻进程。
-        let err = Cli::try_parse_from(["snipshot"]).unwrap_err();
+        let err = Cli::try_parse_from(["semisnip"]).unwrap_err();
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
@@ -468,18 +469,18 @@ mod tests {
 
     #[test]
     fn help_and_version_are_success() {
-        for args in [["snipshot", "--help"], ["snipshot", "--version"]] {
+        for args in [["semisnip", "--help"], ["semisnip", "--version"]] {
             let err = Cli::try_parse_from(args).unwrap_err();
             assert_eq!(classify(err.kind()), ExitCode::SUCCESS, "{args:?}");
         }
-        let err = Cli::try_parse_from(["snipshot", "nope"]).unwrap_err();
+        let err = Cli::try_parse_from(["semisnip", "nope"]).unwrap_err();
         assert_eq!(classify(err.kind()), ExitCode::FAILURE);
     }
 
     #[test]
     fn trigger_defaults_to_manual_and_accepts_both_spellings() {
         let parse = |extra: &[&str]| {
-            let mut args = vec!["snipshot", "trigger"];
+            let mut args = vec!["semisnip", "trigger"];
             args.extend_from_slice(extra);
             match Cli::try_parse_from(args).unwrap().command {
                 Command::Trigger { origin } => origin,
@@ -501,9 +502,9 @@ mod tests {
 
     #[test]
     fn symlinked_exe_resolves_to_the_real_binary() {
-        // 从 /usr/local/bin/snipshot（软链）运行时，写进 yml 的必须是 .app 里的
+        // 从 /usr/local/bin/semisnip（软链）运行时，写进 yml 的必须是 .app 里的
         // 真身，否则删掉软链降级触发就悄悄失效了。
-        let dir = std::env::temp_dir().join("snipshot-resolve-exe");
+        let dir = std::env::temp_dir().join("semisnip-resolve-exe");
         let _ = std::fs::create_dir_all(&dir);
         let real = dir.join("real-bin");
         std::fs::write(&real, b"#!/bin/sh\n").unwrap();

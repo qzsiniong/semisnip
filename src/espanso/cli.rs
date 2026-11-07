@@ -27,7 +27,7 @@ pub struct CliMatch {
 
 impl EspansoCli {
     pub fn discover() -> Self {
-        if let Ok(bin) = std::env::var("SNIPSHOT_ESPANSO_BIN") {
+        if let Ok(bin) = std::env::var("SEMISNIP_ESPANSO_BIN") {
             if !bin.trim().is_empty() {
                 return Self {
                     bin: PathBuf::from(bin),

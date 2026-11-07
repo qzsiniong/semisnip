@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Snipshot</string>
+    <string>Semisnip</string>
     <key>CFBundleDisplayName</key>
-    <string>Snipshot</string>
+    <string>Semisnip</string>
     <key>CFBundleIdentifier</key>
-    <string>com.snipshot.app</string>
+    <string>com.semisnip.app</string>
     <key>CFBundleExecutable</key>
-    <string>snipshot</string>
+    <string>semisnip</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
@@ -33,6 +33,6 @@
 
     <!-- CGEventTap 需要「辅助功能」授权，首次运行由系统弹窗引导。 -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>Snipshot 需要读取 espanso 的片段配置，并把选中的片段交给 espanso 展开。</string>
+    <string>Semisnip 需要读取 espanso 的片段配置，并把选中的片段交给 espanso 展开。</string>
 </dict>
 </plist>

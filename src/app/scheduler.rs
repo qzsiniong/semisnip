@@ -107,7 +107,7 @@ fn cancel(cx: &mut App, state: &Entity<AppState>) {
     close(cx, state);
     if erase > 0 {
         std::thread::Builder::new()
-            .name("snipshot-erase".into())
+            .name("semisnip-erase".into())
             .spawn(move || crate::handoff::inject::backspace(erase))
             .ok();
     }

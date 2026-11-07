@@ -61,7 +61,7 @@ impl IndexService {
     pub fn reload_async(self: &Arc<Self>, tx: Sender<Event>) {
         let this = self.clone();
         std::thread::Builder::new()
-            .name("snipshot-index".into())
+            .name("semisnip-index".into())
             .spawn(move || {
                 this.reload_blocking();
                 let _ = tx.send(Event::IndexUpdated);
@@ -74,7 +74,7 @@ impl IndexService {
         let root = self.root.clone();
         let this = self.clone();
         std::thread::Builder::new()
-            .name("snipshot-watch".into())
+            .name("semisnip-watch".into())
             .spawn(move || {
                 use notify::{RecursiveMode, Watcher};
 

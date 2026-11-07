@@ -241,7 +241,7 @@ pub fn app(cx: &gpui_kit::App) -> Entity<AppState> {
 // 让 `confirm` 的调用点只有一处，避免"关窗/回删/exec"顺序被改坏。
 pub fn run_confirm(hit: Hit, erase: usize, config: Config, fallback: Option<String>) {
     std::thread::Builder::new()
-        .name("snipshot-handoff".into())
+        .name("semisnip-handoff".into())
         .spawn(move || {
             let outcome = handoff::confirm(&hit, erase, &config, fallback.as_deref());
             match outcome {

@@ -4,6 +4,10 @@
 //! 解析式矩形，构建期按需渲染成任意尺寸，想要多大就有多大，也不会出现
 //! 「源文件是 1024 但某处贴了张 256」这种漂移。
 //!
+//! 配色是**双色**的：斜体 `I` 近白，两个分号琥珀。菜单栏图标反过来必须
+//! 单色（模板图由系统按外观上色），所以分色只发生在这一层——`tray.rs` 那边
+//! 调的仍然是 `mark::template_rgba`，只有 alpha。
+//!
 //! 产出（都在 `packaging/macos/`，内容没变时不重写，免得刷 mtime）：
 //! - `AppIcon.icns`：10 个槽位（16…1024，含 @2x），PNG 负载，手写的 ICNS 容器
 //! - `icon-preview.png`：512px 预览，README 里贴的就是它
@@ -29,7 +33,10 @@ type Rgb = (u8, u8, u8);
 
 const TOP: Rgb = (43, 48, 59); // #2B303B
 const BOTTOM: Rgb = (18, 21, 26); // #12151A
-const INK: Rgb = (247, 248, 250); // 近白而非纯白：纯白在浅色壁纸上会发飘
+/// 字母：近白而非纯白——纯白在浅色壁纸上会发飘。
+const LETTER: Rgb = (247, 248, 250); // #F7F8FA
+/// 分号：琥珀。深色底上这个色最"跳"，而且和白色字母并排不会互相吃掉。
+const PUNCT: Rgb = (255, 158, 100); // #FF9E64
 
 /// ICNS 的槽位：类型标签 + 该标签要求的像素边长。同一个尺寸出现两次是正常的
 /// ——`icp5` 是 32×32@1x，`ic11` 是 16×16@2x，系统按屏幕倍率挑。
@@ -68,10 +75,13 @@ fn main() {
     );
 
     let (tray, tw, th) = tray_preview();
-    write_if_changed(&out_dir.join("tray-preview.png"), &encode_png(&tray, tw, th));
+    write_if_changed(
+        &out_dir.join("tray-preview.png"),
+        &encode_png(&tray, tw, th),
+    );
 }
 
-/// 渲染一张 `size×size` 的图标。
+/// 渲染一张 `size×size` 的双色图标。
 ///
 /// 每个尺寸都从零开始采样，不做「渲大图再缩」：16px 的图标只有十几像素宽，
 /// 缩下来的笔画会糊成一团灰，而解析式渲染在这个尺寸上还能保持两三像素的实心。
@@ -85,7 +95,7 @@ fn render(size: u32) -> Vec<u8> {
     let mut buf = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
         for x in 0..size {
-            let (mut body, mut ink) = (0u32, 0u32);
+            let (mut body, mut letter, mut punct) = (0u32, 0u32, 0u32);
             for sy in 0..mark::SUB {
                 for sx in 0..mark::SUB {
                     let px = x as f32 + (sx as f32 + 0.5) / mark::SUB as f32;
@@ -93,8 +103,10 @@ fn render(size: u32) -> Vec<u8> {
                     if in_squircle(px, py, lo, hi, radius) {
                         body += 1;
                     }
-                    if mark::hit(bx, px, py) {
-                        ink += 1;
+                    match mark::sample(bx, px, py) {
+                        Some(mark::Part::Letter) => letter += 1,
+                        Some(mark::Part::Punct) => punct += 1,
+                        None => {}
                     }
                 }
             }
@@ -106,7 +118,7 @@ fn render(size: u32) -> Vec<u8> {
             // 底色沿 y 方向从 TOP 渐变到 BOTTOM，像被一盏顶灯照着。
             let t = ((y as f32 - lo) / (hi - lo)).clamp(0.0, 1.0);
             let bg = mix(TOP, BOTTOM, t);
-            let fg = mix(bg, INK, ink as f32 / n as f32);
+            let fg = blot(bg, letter, punct, n);
             buf[i] = fg.0;
             buf[i + 1] = fg.1;
             buf[i + 2] = fg.2;
@@ -114,6 +126,25 @@ fn render(size: u32) -> Vec<u8> {
         }
     }
     buf
+}
+
+/// 把两种墨合成一层再铺到渐变底上。
+///
+/// 先按各自的样本数求出这一像素的"平均墨色"，再整体乘上总覆盖率——不是
+/// 分别两次混合。两次混合会在字母与分号的交界处叠出第三种颜色（两边的
+/// 抗锯齿都是半透明，叠起来比谁都深），边缘会有一圈脏线。
+fn blot(bg: Rgb, letter: u32, punct: u32, n: u32) -> Rgb {
+    let ink = letter + punct;
+    if ink == 0 {
+        return bg;
+    }
+    let k = 1.0 / ink as f32;
+    let mixed = (
+        (LETTER.0 as f32 * letter as f32 + PUNCT.0 as f32 * punct as f32) * k,
+        (LETTER.1 as f32 * letter as f32 + PUNCT.1 as f32 * punct as f32) * k,
+        (LETTER.2 as f32 * letter as f32 + PUNCT.2 as f32 * punct as f32) * k,
+    );
+    mix_f(bg, mixed, ink as f32 / n as f32)
 }
 
 /// 圆角方块：把点夹到「内矩形」上再比距离，矩形内部距离为 0，四角自然圆掉。
@@ -125,6 +156,11 @@ fn in_squircle(x: f32, y: f32, lo: f32, hi: f32, r: f32) -> bool {
 
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let f = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
+}
+
+fn mix_f(a: Rgb, b: (f32, f32, f32), t: f32) -> Rgb {
+    let f = |a: u8, b: f32| (a as f32 + (b - a as f32) * t).round().clamp(0.0, 255.0) as u8;
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 
@@ -166,8 +202,7 @@ fn tray_preview() -> (Vec<u8>, u32, u32) {
                         let j = ((py * total_w + px) * 4) as usize;
                         // 覆盖率当不透明度铺在底色上，边缘才有过渡
                         for (k, base) in [bg.0, bg.1, bg.2].into_iter().enumerate() {
-                            buf[j + k] =
-                                ((base as u32 * (255 - a) + ink as u32 * a) / 255) as u8;
+                            buf[j + k] = ((base as u32 * (255 - a) + ink as u32 * a) / 255) as u8;
                         }
                     }
                 }

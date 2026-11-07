@@ -1,7 +1,7 @@
 //! 自有配置与路径。
 //!
-//! 片段本身永远只存在 espanso 的 YAML 里；这里只放 snipshot 自己的偏好，
-//! 保证卸载 snipshot 不会动用户任何片段数据。
+//! 片段本身永远只存在 espanso 的 YAML 里；这里只放 semisnip 自己的偏好，
+//! 保证卸载 semisnip 不会动用户任何片段数据。
 //!
 //! 配置用 YAML 而不是 JSON：手改时能写注释、写错有行列号，文件头那行
 //! `# yaml-language-server: $schema=` 还能让编辑器（VS Code + YAML 扩展、
@@ -23,9 +23,9 @@ const SCHEMA: &str = include_str!("../assets/config.schema.json");
 
 /// 写在 YAML 开头的抬头。改配置的人第一眼就该看到「改完要重启」。
 const HEADER: &str = "\
-# snipshot 配置。daemon 只在启动时读一次，改完执行：
-#   snipshot config set <key> <value>              # 推荐：带类型与范围校验
-#   launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon
+# semisnip 配置。daemon 只在启动时读一次，改完执行：
+#   semisnip config set <key> <value>              # 推荐：带类型与范围校验
+#   launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
 # 改坏了也不至于起不来：解析失败时 daemon 会用默认值，并把原因写进日志。
 # yaml-language-server: $schema=./config.schema.json
 ";
@@ -191,17 +191,20 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-/// `~/Library/Application Support/snipshot`
+/// 三个目录都用这个名字：`Application Support`、`Caches`、日志文件名。
+const APP_DIR: &str = "semisnip";
+
+/// `~/Library/Application Support/semisnip`
 pub fn support_dir() -> PathBuf {
     home()
         .join("Library")
         .join("Application Support")
-        .join("snipshot")
+        .join(APP_DIR)
 }
 
-/// `~/Library/Caches/snipshot`
+/// `~/Library/Caches/semisnip`
 pub fn cache_dir() -> PathBuf {
-    home().join("Library").join("Caches").join("snipshot")
+    home().join("Library").join("Caches").join(APP_DIR)
 }
 
 pub fn config_path() -> PathBuf {
@@ -217,12 +220,12 @@ pub fn usage_path() -> PathBuf {
 }
 
 pub fn log_path() -> PathBuf {
-    support_dir().join("snipshot.log")
+    support_dir().join("semisnip.log")
 }
 
 /// daemon 与 CLI 的会合点。放在 Cache 下：系统可清理，重建无副作用。
 pub fn socket_path() -> PathBuf {
-    cache_dir().join("snipshot.sock")
+    cache_dir().join("semisnip.sock")
 }
 
 pub fn ensure_dirs() {
@@ -235,10 +238,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "snipshot-config-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("semisnip-config-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -309,7 +310,7 @@ mod tests {
         assert!(dir.join(SCHEMA_FILE).exists());
 
         let text = std::fs::read_to_string(&yml).unwrap();
-        assert!(text.starts_with("# snipshot 配置"));
+        assert!(text.starts_with("# semisnip 配置"));
     }
 
     #[test]

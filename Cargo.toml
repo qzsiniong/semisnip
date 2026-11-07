@@ -1,5 +1,5 @@
 [package]
-name = "snipshot"
+name = "semisnip"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -7,11 +7,11 @@ description = "espanso 的片段检索层：非激活面板负责选，espanso �
 license = "MIT"
 
 [lib]
-name = "snipshot"
+name = "semisnip"
 path = "src/lib.rs"
 
 [[bin]]
-name = "snipshot"
+name = "semisnip"
 path = "src/main.rs"
 
 [dependencies]

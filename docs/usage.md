@@ -20,7 +20,7 @@
 | `Backspace` | 删除过滤字符 |
 | `Cmd` / `Ctrl` + 任意键 | 放行给系统并关闭面板，不吞系统快捷键 |
 
-触发串不是写死的 `;;`，`snipshot config set trigger ,,` 可以换（只允许 ASCII，因为要被编译成物理键码序列）。
+触发串不是写死的 `;;`，`semisnip config set trigger ,,` 可以换（只允许 ASCII，因为要被编译成物理键码序列）。
 
 ## 过滤与排序
 
@@ -41,8 +41,8 @@
 | 来源 | 场景 |
 |---|---|
 | `tap` | 正常路径：CGEventTap 在任意 App 里识别到触发串 |
-| `espanso` | 降级路径：没有辅助功能权限时，espanso 的 shell 变量调 `snipshot trigger` |
-| `manual` | 手动：终端里 `snipshot trigger`，或点菜单栏第一项 |
+| `espanso` | 降级路径：没有辅助功能权限时，espanso 的 shell 变量调 `semisnip trigger` |
+| `manual` | 手动：终端里 `semisnip trigger`，或点菜单栏第一项 |
 
 三者只影响日志与降级判断，面板行为一致。
 

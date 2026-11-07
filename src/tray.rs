@@ -16,8 +16,15 @@ use crate::app::event::Event;
 use crate::ipc::proto::Origin;
 
 gpui_kit::actions!(
-    snipshot_tray,
-    [OpenPanel, ReloadIndex, OpenConfig, OpenMatchFile, OpenLog, Quit]
+    semisnip_tray,
+    [
+        OpenPanel,
+        ReloadIndex,
+        OpenConfig,
+        OpenMatchFile,
+        OpenLog,
+        Quit
+    ]
 );
 
 /// 保住 `Tray` 的句柄。丢了它 NSStatusItem 会被移除，图标当场消失。
@@ -33,7 +40,7 @@ pub fn install(cx: &mut App, tx: Sender<Event>) -> anyhow::Result<()> {
 
     let tray = gpui_tray::Tray::builder()
         .icon(icon()?)
-        .tooltip("snipshot — 输入 ;; 选片段")
+        .tooltip("semisnip — 输入 ;; 选片段")
         .menu(menu)
         .build(cx)?;
 
@@ -53,10 +60,10 @@ fn menu_items() -> Vec<MenuItem> {
         MenuItem::action("重建索引", ReloadIndex),
         MenuItem::separator(),
         MenuItem::action("打开配置…", OpenConfig),
-        MenuItem::action("打开 snipshot.yml…", OpenMatchFile),
+        MenuItem::action("打开 semisnip.yml…", OpenMatchFile),
         MenuItem::action("打开日志…", OpenLog),
         MenuItem::separator(),
-        MenuItem::action("退出 snipshot", Quit),
+        MenuItem::action("退出 semisnip", Quit),
     ]
 }
 
@@ -87,7 +94,10 @@ fn register_actions(cx: &mut App, tx: Sender<Event>) {
         reveal(crate::config::config_path(), crate::config::support_dir());
     });
     cx.on_action(|_: &OpenMatchFile, _: &mut App| {
-        reveal(crate::espanso::paths::match_file(), crate::espanso::paths::match_dir());
+        reveal(
+            crate::espanso::paths::match_file(),
+            crate::espanso::paths::match_dir(),
+        );
     });
     cx.on_action(|_: &OpenLog, _: &mut App| {
         reveal(crate::config::log_path(), crate::config::support_dir());
@@ -99,7 +109,11 @@ fn reveal(target: std::path::PathBuf, fallback_dir: std::path::PathBuf) {
     let path = if target.exists() {
         target
     } else {
-        log::info!("{} 不存在，改开目录 {}", target.display(), fallback_dir.display());
+        log::info!(
+            "{} 不存在，改开目录 {}",
+            target.display(),
+            fallback_dir.display()
+        );
         fallback_dir
     };
     if let Err(err) = Command::new("open").arg(&path).spawn() {
@@ -115,7 +129,7 @@ const SCALE: u32 = 2;
 /// 只是更小、且走模板图。
 ///
 /// 之前这里优先用系统符号 `text.cursor`，现在不用了：那是「光标」而不是
-/// 「snipshot」。应用图标已经变成「I;;」，菜单栏必须跟着变，否则同一个程序
+/// 「semisnip」。应用图标已经变成「I;;」，菜单栏必须跟着变，否则同一个程序
 /// 在两处长得像两个东西。
 fn icon() -> anyhow::Result<gpui_tray::Icon> {
     let w = (HEIGHT as f32 * crate::mark::aspect()).round() as u32 * SCALE;
@@ -127,7 +141,6 @@ fn icon() -> anyhow::Result<gpui_tray::Icon> {
             .build()?,
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -168,7 +181,10 @@ mod tests {
         assert!(matches!(items[0], MenuItem::Action { .. }));
         // 分组线：打开 | 重建 | 三个"打开…" | 退出
         for index in [1, 3, 7] {
-            assert!(matches!(items[index], MenuItem::Separator), "第 {index} 项应是分隔线");
+            assert!(
+                matches!(items[index], MenuItem::Separator),
+                "第 {index} 项应是分隔线"
+            );
         }
         assert!(matches!(items[8], MenuItem::Action { .. }));
     }

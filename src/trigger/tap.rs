@@ -132,7 +132,7 @@ pub fn install(tx: Sender<Event>, config: TriggerConfig) {
     }
 
     std::thread::Builder::new()
-        .name("snipshot-tap".into())
+        .name("semisnip-tap".into())
         .spawn(move || imp::run(shared))
         .ok();
 }

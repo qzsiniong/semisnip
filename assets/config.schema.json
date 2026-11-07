@@ -1,13 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "snipshot 配置",
-  "description": "~/Library/Application Support/snipshot/config.yml。daemon 只在启动时读一次，改完要重启才生效。用 `snipshot config set` 修改会自动校验。",
+  "title": "semisnip 配置",
+  "description": "~/Library/Application Support/semisnip/config.yml。daemon 只在启动时读一次，改完要重启才生效。用 `semisnip config set` 修改会自动校验。",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "trigger": {
       "title": "触发串",
-      "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（snipshot match regenerate）。",
+      "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（semisnip match regenerate）。",
       "type": "string",
       "default": ";;",
       "minLength": 1,

@@ -5,7 +5,7 @@ daemon 是常驻进程，但**不进 Dock、不进 Cmd-Tab**：`Info.plist` 里 
 验证方法：
 
 ```bash
-lsappinfo list | grep -A3 -i snipshot   # 应看到 type="UIElement"
+lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 ```
 
 ## 菜单
@@ -18,27 +18,33 @@ lsappinfo list | grep -A3 -i snipshot   # 应看到 type="UIElement"
 重建索引
 ──────────
 打开配置…           ← 用系统默认程序打开 config.yml
-打开 snipshot.yml…  ← espanso 的那个降级触发定义（不存在时打开其目录）
+打开 semisnip.yml…  ← espanso 的那个降级触发定义（不存在时打开其目录）
 打开日志…
 ──────────
-退出 snipshot       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
+退出 semisnip       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
 ```
 
-菜单项不是直接调系统 API，而是发 GPUI action 回到 scheduler 的事件通道——和 `snipshot trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。
+菜单项不是直接调系统 API，而是发 GPUI action 回到 scheduler 的事件通道——和 `semisnip trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。
 
 ## 标记
 
-标记是「斜体 `I` + `;;`」：`I` 是光标，`;;` 是触发词，合起来就是产品那一句话。菜单栏用的也是它——同一个程序在两个地方必须是同一个记号。
+标记是「斜体 `I` + `;;`」：`I` 是光标，`;;` 是触发词，合起来就是产品那一句话。它同时也是名字的拆解——`semi` 是 semicolon（分号），`snip` 是 snippet（片段）。
+
+**粗细是刻意不对称的**：`I` 只有 6–9 个单位厚，两个分号却是「小圆点 + 胖逗号」。比例是照真实衬线斜体量的——分号里胖的那一半是逗号，点要明显更小。这一点做反（大点配细尾）就成了字母 `i`，两个并排会读成「ii」，整个标记也就废了。
+
+逗号也不是「圆 + 三角」两块拼起来的：碗是一个圆，尾巴沿一条二次贝塞尔铺一串逐渐变小的圆取并集，起笔那个圆与碗**内切**（颈部右错 1.5 + 颈部半径 5.3 = 碗半径 6.8）。错开给了左边那道凹口——没有它，逗号只是一颗水滴；内切保证右侧接缝光滑——多一分，三点钟方向就会顶出一根毛刺。
 
 ![应用图标](../packaging/macos/icon-preview.png)
 
-菜单栏图标是同一个标记，只是更小（15pt 高、按比例宽 20pt）：
+**应用图标是双色的**：`I` 近白，`;;` 琥珀（`#FF9E64`）。分色只发生在 `build.rs` 那一层——它有 `mark::sample()` 返回的 `Part::Letter` / `Part::Punct` 可用来分别计数。
+
+菜单栏图标是同一个形状，但**必须单色**：模板图只认 alpha，颜色由 AppKit 按菜单栏明暗决定。所以 `tray.rs` 走的是 `mark::template_rgba()`，只出 alpha。15pt 高、按比例宽 20pt：
 
 ![菜单栏图标](../packaging/macos/tray-preview.png)
 
 ## 图标是生成的，仓库里不放二进制素材
 
-形状在 `src/mark.rs` 里是一组解析式矩形，`build.rs` 在构建期把它渲染成 PNG 和 ICNS。所以：
+形状在 `src/mark.rs` 里是一组解析式图元（矩形、圆、一条二次贝塞尔），`build.rs` 在构建期把它渲染成 PNG 和 ICNS。所以：
 
 - 改设计只改 `src/mark.rs` 里的几个常量，`cargo build` 自动重画；
 - 每次构建都从零采样（4×4 子样本算覆盖率），16px 和 1024px 用的是同一套线条，不存在「大图缩下来发糊」；
@@ -56,9 +62,14 @@ lsappinfo list | grep -A3 -i snipshot   # 应看到 type="UIElement"
 | `icon-preview.png` | 512px 预览，就是上面第一张图 | 入库，README / 本文引用 |
 | `tray-preview.png` | 菜单栏图标的深浅底色对照（放大 8 倍，用来看 15pt 下认不认得出来） | 入库，同上 |
 
-### 小尺寸会少画一笔
+### 小尺寸会少画一笔，但笔画会补粗
 
-16px 的分号圆点只有 1.15px，画出来不是「;」而是一团灰，还把 `I` 的轮廓拖脏。所以 `mark::hit()` 会按框宽判断：圆点不足 1.5px 就只画 `I`。32px 的圆点是 2.3px，两个分号正常出现。
+两道保险，都在 `mark.rs` 里：
+
+1. **16px 只画 `I`**：圆点缩到 16px 不足 1.6 像素，画出来不是「;」而是一团灰，还把 `I` 的轮廓一起拖脏。`has_detail()` 按框宽判断，圆点不足 1.8px 就整组省掉。32px 有 2.1px，两个分号正常出现。
+2. **24px 以下笔画加粗**：`weight()` 会给笔画补 0–2.2 个设计单位。`I` 的横杠只有 6 个单位，缩到 16px 不足 1 像素，不补就淡成一条灰边。正常尺寸完全不受影响。
+
+所以要改粗细，别直接动 `BAR_TOP` 那几个数——先看 `weight()` 会不会把改动抵消掉。
 
 ## 图标没出现？
 
@@ -66,4 +77,4 @@ lsappinfo list | grep -A3 -i snipshot   # 应看到 type="UIElement"
 
 处理：随手退出一个菜单栏常驻 app，或按住 ⌘ 拖动图标调整位置，`I` 就出来了。
 
-这和 snipshot 本身无关：用纯文本状态项做的最小 AppKit 探针在同样环境里也一样看不见。另一个坑是**不要用窗口枚举判断**——这台机器上 `CGWindowListCopyWindowInfo` 连探针的 layer-25 状态栏窗口都枚举不到，「列表里没有 Snipshot」不能当作失败证据。
+这和 semisnip 本身无关：用纯文本状态项做的最小 AppKit 探针在同样环境里也一样看不见。另一个坑是**不要用窗口枚举判断**——这台机器上 `CGWindowListCopyWindowInfo` 连探针的 layer-25 状态栏窗口都枚举不到，「列表里没有 Semisnip」不能当作失败证据。

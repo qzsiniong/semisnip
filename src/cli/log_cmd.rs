@@ -1,4 +1,4 @@
-//! `snipshot log`：读 daemon 日志。
+//! `semisnip log`：读 daemon 日志。
 //!
 //! daemon 以 `.app` 启动时没有终端，出问题只能回看文件，所以「不离开终端
 //! 就能看日志」是这个子命令的全部意义。行为对齐 `tail`，但多一层级别过滤。
@@ -228,7 +228,7 @@ fn clear(path: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("snipshot log: 清空失败：{err}");
+            eprintln!("semisnip log: 清空失败：{err}");
             ExitCode::FAILURE
         }
     }
@@ -253,7 +253,7 @@ mod tests {
     }
 
     fn parse(args: &[&str]) -> LogArgs {
-        let mut full = vec!["snipshot", "log"];
+        let mut full = vec!["semisnip", "log"];
         full.extend_from_slice(args);
         match Wrapper::try_parse_from(full).unwrap().cmd {
             Cmd::Log(log) => log,
@@ -283,9 +283,9 @@ mod tests {
     fn actions_are_subcommands() {
         assert!(matches!(parse(&["path"]).action, Some(LogAction::Path)));
         assert!(matches!(parse(&["clear"]).action, Some(LogAction::Clear)));
-        assert!(Wrapper::try_parse_from(["snipshot", "log", "--whatever"]).is_err());
+        assert!(Wrapper::try_parse_from(["semisnip", "log", "--whatever"]).is_err());
         assert!(
-            Wrapper::try_parse_from(["snipshot", "log", "--level", "fatal"]).is_err(),
+            Wrapper::try_parse_from(["semisnip", "log", "--level", "fatal"]).is_err(),
             "瞎写的级别该被挡住"
         );
     }
@@ -301,10 +301,10 @@ mod tests {
 
     #[test]
     fn level_is_read_from_brackets() {
-        let line = "[2026-11-07T08:30:34Z WARN  snipshot::handoff] match exec 失败";
+        let line = "[2026-11-07T08:30:34Z WARN  semisnip::handoff] match exec 失败";
         assert_eq!(Level::of_line(line), Some(Level::Warn));
         assert_eq!(
-            Level::of_line("[2026-11-07T08:30:34Z ERROR snipshot] boom"),
+            Level::of_line("[2026-11-07T08:30:34Z ERROR semisnip] boom"),
             Some(Level::Error)
         );
         assert_eq!(Level::of_line("没有前缀的续行"), None);
@@ -312,8 +312,8 @@ mod tests {
 
     #[test]
     fn filters_by_grep_and_level() {
-        let info = "[2026-11-07T08:30:34Z INFO  snipshot::ipc] 面板已打开";
-        let warn = "[2026-11-07T08:30:34Z WARN  snipshot::handoff] match exec 失败";
+        let info = "[2026-11-07T08:30:34Z INFO  semisnip::ipc] 面板已打开";
+        let warn = "[2026-11-07T08:30:34Z WARN  semisnip::handoff] match exec 失败";
 
         assert!(keep(info, &opts(None, None)));
         assert!(keep(info, &opts(Some("面板"), None)));

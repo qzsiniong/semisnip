@@ -1,6 +1,6 @@
-//! `snipshot config`：查看与修改 `config.yml`。
+//! `semisnip config`：查看与修改 `config.yml`。
 //!
-//! 只碰 snipshot 自己的偏好，**不碰** espanso 的 YAML——片段永远归 espanso 管。
+//! 只碰 semisnip 自己的偏好，**不碰** espanso 的 YAML——片段永远归 espanso 管。
 //! 所有写入都走「读旧文件 → 改一个键 → 反序列化校验 → 原子落盘」，
 //! 保证手改坏了会被发现，而不是悄悄用默认值跑起来。
 //!
@@ -51,7 +51,7 @@ pub enum ConfigCmd {
     Schema,
     /// 读取单个键
     Get {
-        /// 键名，`snipshot config keys` 查看全部
+        /// 键名，`semisnip config keys` 查看全部
         #[arg(value_name = "KEY")]
         key: String,
     },
@@ -105,7 +105,7 @@ pub fn run(cmd: Option<ConfigCmd>) -> ExitCode {
 }
 
 fn fail(message: &str) -> ExitCode {
-    eprintln!("snipshot config: {message}");
+    eprintln!("semisnip config: {message}");
     ExitCode::FAILURE
 }
 
@@ -134,7 +134,11 @@ fn show() -> ExitCode {
         if !same {
             changed.push(*key);
         }
-        println!("  {key:<22} = {}{}", plain(&value), if same { "" } else { "   *" });
+        println!(
+            "  {key:<22} = {}{}",
+            plain(&value),
+            if same { "" } else { "   *" }
+        );
     }
     if !changed.is_empty() {
         println!("\n  * = 与默认值不同");
@@ -179,7 +183,7 @@ fn set(key: &str, rest: &[String]) -> ExitCode {
     }
     if rest.is_empty() {
         return fail(&format!(
-            "`{key}` 缺少取值，`snipshot config keys` 查看含义"
+            "`{key}` 缺少取值，`semisnip config keys` 查看含义"
         ));
     }
     // 允许 `set trigger ,,` 与 `set trigger " "` 两种写法，所以把剩下的都拼起来。
@@ -283,7 +287,7 @@ fn hint_restart() {
         .and_then(|out| String::from_utf8(out.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "$(id -u)".into());
-    println!("重启 daemon 生效：launchctl kickstart -k gui/{uid}/com.snipshot.daemon");
+    println!("重启 daemon 生效：launchctl kickstart -k gui/{uid}/com.semisnip.daemon");
 }
 
 fn known_key(key: &str) -> Result<(), String> {
@@ -416,14 +420,8 @@ mod tests {
         assert_eq!(coerce("show_detail", "false").unwrap(), Value::Bool(false));
         assert_eq!(coerce("show_detail", "ON").unwrap(), Value::Bool(true));
         assert_eq!(coerce("max_results", "12").unwrap(), Value::from(12));
-        assert_eq!(
-            coerce("panel_width", "800.5").unwrap(),
-            Value::from(800.5)
-        );
-        assert_eq!(
-            coerce("trigger", ";;").unwrap(),
-            Value::String(";;".into())
-        );
+        assert_eq!(coerce("panel_width", "800.5").unwrap(), Value::from(800.5));
+        assert_eq!(coerce("trigger", ";;").unwrap(), Value::String(";;".into()));
     }
 
     #[test]
@@ -463,10 +461,7 @@ mod tests {
     #[test]
     fn integer_and_float_compare_equal() {
         // 手写 `panel_width: 720` 与默认的 `720.0` 是同一个值
-        assert!(same_value(
-            Some(&Value::from(720.0)),
-            &Value::from(720)
-        ));
+        assert!(same_value(Some(&Value::from(720.0)), &Value::from(720)));
         assert!(!same_value(Some(&Value::from(720.0)), &Value::from(721)));
         assert!(!same_value(None, &Value::Null));
     }
@@ -487,7 +482,10 @@ mod tests {
 
         assert!(parse(&[]).unwrap().is_none());
         assert!(matches!(parse(&["show"]).unwrap(), Some(ConfigCmd::Show)));
-        assert!(matches!(parse(&["schema"]).unwrap(), Some(ConfigCmd::Schema)));
+        assert!(matches!(
+            parse(&["schema"]).unwrap(),
+            Some(ConfigCmd::Schema)
+        ));
         // 带空格的取值不加引号也能拼起来
         match parse(&["set", "trigger", "a", "b"]).unwrap() {
             Some(ConfigCmd::Set { key, value }) => {

@@ -13,10 +13,10 @@ cargo fmt
 ## 本地调试
 
 ```bash
-RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同时进文件
-./target/debug/snipshot trigger                 # 另一个终端打开面板
-./target/debug/snipshot type "log"              # 合成输入
-./target/debug/snipshot key down enter          # 合成按键
+RUST_LOG=debug ./target/debug/semisnip daemon   # 前台跑 daemon，日志同时进文件
+./target/debug/semisnip trigger                 # 另一个终端打开面板
+./target/debug/semisnip type "log"              # 合成输入
+./target/debug/semisnip key down enter          # 合成按键
 ```
 
 建议先开一个纯文本窗口（TextEdit）作为注入目标，方便验证「展开位置是否准确」。
@@ -32,7 +32,7 @@ RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同�
 | `AppIcon.icns` | 忽略（构建产物） |
 | `icon-preview.png` / `tray-preview.png` | 入库（文档配图） |
 
-内容没变时不重写，所以不会无谓刷 mtime。改 `src/mark.rs` 里任何常量，下次构建三张图一起更新。
+内容没变时不重写，所以不会无谓刷 mtime。改 `src/mark.rs` 里任何常量，下次构建三张图一起更新——应用图标是双色（字母近白、分号琥珀），菜单栏那张预览是单色，两者同源。
 
 ## 配置 schema 别忘同步
 
@@ -41,7 +41,7 @@ RUST_LOG=debug ./target/debug/snipshot daemon   # 前台跑 daemon，日志同�
 ## 打包
 
 ```bash
-./scripts/bundle-macos.sh            # 只产出 target/Snipshot.app
+./scripts/bundle-macos.sh            # 只产出 target/Semisnip.app
 ./scripts/bundle-macos.sh --install  # 安装到 /Applications + LaunchAgent + CLI 软链
 ```
 

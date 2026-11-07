@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.snipshot.daemon</string>
+    <string>com.semisnip.daemon</string>
 
     <!-- 必须是 .app 内的可执行文件：裸二进制拿不到辅助功能授权，
          也无法以 Accessory 身份显示非激活面板。 -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Snipshot.app/Contents/MacOS/snipshot</string>
+        <string>/Applications/Semisnip.app/Contents/MacOS/semisnip</string>
         <string>daemon</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- 崩溃后自动拉起；正常退出（退出码 0）不再重启，避免和 `snipshot trigger` 抢实例。 -->
+    <!-- 崩溃后自动拉起；正常退出（退出码 0）不再重启，避免和 `semisnip trigger` 抢实例。 -->
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
@@ -27,7 +27,7 @@
     <string>Interactive</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/snipshot.daemon.err.log</string>
+    <string>/tmp/semisnip.daemon.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -1,7 +1,7 @@
 //! daemon ↔ CLI 的线协议：NDJSON，一行一个 JSON，双向都带版本号。
 //!
-//! 约定（源文件是 `cli::render_match_file`，随时可用 `snipshot match show` 查看）：
-//! - `snipshot trigger` 成功时 **stdout 必须为空**——espanso 会把 stdout
+//! 约定（源文件是 `cli::render_match_file`，随时可用 `semisnip match show` 查看）：
+//! - `semisnip trigger` 成功时 **stdout 必须为空**——espanso 会把 stdout
 //!   当作展开内容注入，多打印一个字节就会污染用户文档。
 //! - 所以这里所有错误都走 stderr，响应只用于 CLI 判断成败。
 
@@ -12,11 +12,11 @@ pub const PROTOCOL_VERSION: u8 = 2;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
-    /// snipshot 自己的 tap 命中。
+    /// semisnip 自己的 tap 命中。
     Tap,
     /// espanso 的 shell match 唤醒（无辅助功能权限时的降级路径）。
     EspansoShell,
-    /// 手动执行 `snipshot trigger`。
+    /// 手动执行 `semisnip trigger`。
     #[default]
     Manual,
 }

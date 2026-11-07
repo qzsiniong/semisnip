@@ -1,8 +1,8 @@
-//! `snipshot uninstall`：把 snipshot 自己装进去的东西拆掉。
+//! `semisnip uninstall`：把 semisnip 自己装进去的东西拆掉。
 //!
-//! 边界很硬：**只删 snipshot 自己创建的文件**。espanso 的 `match/**`（用户的
-//! 片段）、`config/default.yml`、`~/.config/espanso` 一律不碰——除了 snipshot
-//! 生成的那一个 `snipshot.yml`。
+//! 边界很硬：**只删 semisnip 自己创建的文件**。espanso 的 `match/**`（用户的
+//! 片段）、`config/default.yml`、`~/.config/espanso` 一律不碰——除了 semisnip
+//! 生成的那一个 `semisnip.yml`。
 //!
 //! 默认是「演练」：只打印计划。真删要显式 `--yes`，因为这是不可逆操作。
 
@@ -13,9 +13,9 @@ use clap::Args;
 
 use crate::config;
 
-const APP: &str = "/Applications/Snipshot.app";
-const LINK: &str = "/usr/local/bin/snipshot";
-const LABEL: &str = "com.snipshot.daemon";
+const APP: &str = "/Applications/Semisnip.app";
+const LINK: &str = "/usr/local/bin/semisnip";
+const LABEL: &str = "com.semisnip.daemon";
 
 #[derive(Debug, Args)]
 pub struct UninstallArgs {
@@ -27,7 +27,7 @@ pub struct UninstallArgs {
     #[arg(long)]
     purge: bool,
 
-    /// 保留 /Applications/Snipshot.app
+    /// 保留 /Applications/Semisnip.app
     #[arg(long)]
     keep_app: bool,
 }
@@ -181,7 +181,7 @@ pub fn run(args: UninstallArgs) -> ExitCode {
     println!();
     if config::config_path().exists() {
         println!("配置与日志保留在 {}", config::support_dir().display());
-        println!("想彻底清干净：snipshot uninstall --yes --purge");
+        println!("想彻底清干净：semisnip uninstall --yes --purge");
     } else {
         println!("配置、使用频率与日志已删除。");
     }
@@ -214,7 +214,7 @@ fn remove(entry: &Entry) -> std::io::Result<()> {
         Kind::File | Kind::Link => std::fs::remove_file(&entry.path),
         Kind::Dir => {
             // 纵深防御：只允许删自己名下的目录，别让路径拼错变成删家目录。
-            let safe = entry.path.ends_with("snipshot") || entry.path == Path::new(APP);
+            let safe = entry.path.ends_with("semisnip") || entry.path == Path::new(APP);
             if !safe {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -229,7 +229,7 @@ fn remove(entry: &Entry) -> std::io::Result<()> {
 fn daemon_pids() -> Option<Vec<i32>> {
     let out = std::process::Command::new("pgrep")
         .arg("-x")
-        .arg("snipshot")
+        .arg("semisnip")
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -293,7 +293,7 @@ mod tests {
     fn refuses_to_delete_paths_outside_whitelist() {
         let entry = Entry {
             label: "伪装成我们的目录",
-            path: PathBuf::from("/tmp/not-snipshot"),
+            path: PathBuf::from("/tmp/not-semisnip"),
             kind: Kind::Dir,
         };
         assert!(remove(&entry).is_err());
@@ -301,11 +301,11 @@ mod tests {
 
     #[test]
     fn link_is_only_ours_when_it_points_into_the_app() {
-        let dir = std::env::temp_dir().join("snipshot-uninstall-test");
+        let dir = std::env::temp_dir().join("semisnip-uninstall-test");
         let _ = std::fs::create_dir_all(&dir);
         let link = dir.join("link");
         let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink("/Applications/Snipshot.app/Contents/MacOS/snipshot", &link)
+        std::os::unix::fs::symlink("/Applications/Semisnip.app/Contents/MacOS/semisnip", &link)
             .unwrap();
         assert!(points_into_app(&link));
 

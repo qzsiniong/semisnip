@@ -1,10 +1,10 @@
-//! `snipshot completion`：生成并安装 shell 补全。
+//! `semisnip completion`：生成并安装 shell 补全。
 //!
 //! 子命令有十几个，靠人记不现实，所以补全不是"锦上添花"而是主路径的一部分。
 //! 设计上分成两半：
 //!
-//! * `snipshot completion <SHELL>` 把脚本打到 stdout，给 `eval "$(...)"` 用；
-//! * `snipshot completion install` 落一个脚本文件，再往 shell 的启动文件里
+//! * `semisnip completion <SHELL>` 把脚本打到 stdout，给 `eval "$(...)"` 用；
+//! * `semisnip completion install` 落一个脚本文件，再往 shell 的启动文件里
 //!   塞一段**带标记**的接管块——标记是为了 `uninstall` 能精确地原样摘掉，
 //!   不去猜用户配置里哪几行是我们写的。
 
@@ -17,9 +17,9 @@ use clap_complete::Shell;
 
 use super::{command, fail};
 
-const BIN: &str = "snipshot";
-const BEGIN: &str = "# >>> snipshot completion >>>";
-const END: &str = "# <<< snipshot completion <<<";
+const BIN: &str = "semisnip";
+const BEGIN: &str = "# >>> semisnip completion >>>";
+const END: &str = "# <<< semisnip completion <<<";
 
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -60,15 +60,15 @@ pub enum CompletionAction {
 
 pub fn run(args: CompletionArgs) -> ExitCode {
     match (args.shell, args.action) {
-        // `snipshot completion zsh` → 打印脚本
+        // `semisnip completion zsh` → 打印脚本
         (Some(shell), None) => {
             print_script(shell);
             ExitCode::SUCCESS
         }
-        // `snipshot completion` → 直接装好，省掉一步
+        // `semisnip completion` → 直接装好，省掉一步
         (None, None) => install(None, args.dry_run),
         (Some(_), Some(_)) => fail(
-            "SHELL 与子命令只能二选一：`snipshot completion zsh` 或 `snipshot completion install`",
+            "SHELL 与子命令只能二选一：`semisnip completion zsh` 或 `semisnip completion install`",
         ),
         (None, Some(CompletionAction::Install { shell, dry_run })) => {
             install(shell, dry_run || args.dry_run)
@@ -100,7 +100,7 @@ impl Plan {
         let quote = |path: &Path| format!("\"{}\"", path.display());
         match shell {
             Shell::Bash => {
-                let script = dir.join("snipshot.bash");
+                let script = dir.join("semisnip.bash");
                 let startup = bash_startup()?;
                 let hook = format!("[ -r {} ] && . {}", quote(&script), quote(&script));
                 Ok(Self {
@@ -110,7 +110,7 @@ impl Plan {
                 })
             }
             Shell::Zsh => {
-                let script = dir.join("snipshot.zsh");
+                let script = dir.join("semisnip.zsh");
                 // compinit 没跑过时 `compdef` 还不存在，直接 source 会每次开
                 // 终端都报错，所以先探一下。
                 let hook = format!(
@@ -129,7 +129,7 @@ impl Plan {
                     .join(".config")
                     .join("fish")
                     .join("completions")
-                    .join("snipshot.fish");
+                    .join("semisnip.fish");
                 Ok(Self {
                     script,
                     startup: None,
@@ -137,7 +137,7 @@ impl Plan {
                 })
             }
             Shell::PowerShell => {
-                let script = dir.join("snipshot.ps1");
+                let script = dir.join("semisnip.ps1");
                 let startup = home()?
                     .join(".config")
                     .join("powershell")
@@ -150,7 +150,7 @@ impl Plan {
                 })
             }
             _ => {
-                Err("这个 shell 没法自动接入，请用 `snipshot completion <shell>` 自行 eval".into())
+                Err("这个 shell 没法自动接入，请用 `semisnip completion <shell>` 自行 eval".into())
             }
         }
     }
@@ -364,7 +364,7 @@ fn detect_shell() -> Result<Shell, String> {
         None
     };
     matched.ok_or_else(|| {
-        format!("认不出 $SHELL=`{shell}`，请显式指定：`snipshot completion install --shell zsh`")
+        format!("认不出 $SHELL=`{shell}`，请显式指定：`semisnip completion install --shell zsh`")
     })
 }
 
@@ -449,7 +449,7 @@ mod tests {
             let mut buf = Vec::new();
             clap_complete::generate(shell, &mut command(), BIN, &mut buf);
             let text = String::from_utf8(buf).unwrap();
-            assert!(text.contains("snipshot"), "{shell} 的脚本里没有命令名");
+            assert!(text.contains("semisnip"), "{shell} 的脚本里没有命令名");
         }
     }
 
@@ -464,19 +464,19 @@ mod tests {
         }
 
         assert!(matches!(
-            Wrapper::try_parse_from(["snipshot", "install"])
+            Wrapper::try_parse_from(["semisnip", "install"])
                 .unwrap()
                 .action,
             CompletionAction::Install { .. }
         ));
         assert!(matches!(
-            Wrapper::try_parse_from(["snipshot", "uninstall"])
+            Wrapper::try_parse_from(["semisnip", "uninstall"])
                 .unwrap()
                 .action,
             CompletionAction::Uninstall { .. }
         ));
         assert!(
-            Wrapper::try_parse_from(["snipshot", "install", "--shell", "zsh"]).is_ok(),
+            Wrapper::try_parse_from(["semisnip", "install", "--shell", "zsh"]).is_ok(),
             "--shell 必须能收下 zsh"
         );
     }

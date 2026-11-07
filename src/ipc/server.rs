@@ -32,7 +32,7 @@ pub fn serve(tx: Sender<Event>, tap_ready: TapProbe) -> Result<PathBuf, ServeErr
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
 
     std::thread::Builder::new()
-        .name("snipshot-ipc".into())
+        .name("semisnip-ipc".into())
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
@@ -40,7 +40,7 @@ pub fn serve(tx: Sender<Event>, tap_ready: TapProbe) -> Result<PathBuf, ServeErr
                         let tx = tx.clone();
                         let tap_ready = tap_ready.clone();
                         std::thread::Builder::new()
-                            .name("snipshot-ipc-conn".into())
+                            .name("semisnip-ipc-conn".into())
                             .spawn(move || handle(stream, tx, tap_ready))
                             .ok();
                     }
@@ -64,7 +64,7 @@ pub enum ServeError {
 impl std::fmt::Display for ServeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AlreadyRunning => write!(f, "已有 snipshot daemon 在运行"),
+            Self::AlreadyRunning => write!(f, "已有 semisnip daemon 在运行"),
             Self::Io(message) => write!(f, "{message}"),
         }
     }

@@ -80,7 +80,7 @@ mod imp {
         press(code as u16, 0);
     }
 
-    /// 逐字符合成输入。仅用于 `snipshot type`（无辅助功能权限时的冒烟测试）。
+    /// 逐字符合成输入。仅用于 `semisnip type`（无辅助功能权限时的冒烟测试）。
     pub fn type_text(text: &str) {
         for c in text.chars() {
             let Some((code, shift)) = crate::trigger::keymap::keycode_and_shift(c) else {

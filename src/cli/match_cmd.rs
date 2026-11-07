@@ -1,8 +1,8 @@
-//! `snipshot match`：看/改 snipshot 写进 espanso 的那一个 YAML。
+//! `semisnip match`：看/改 semisnip 写进 espanso 的那一个 YAML。
 //!
-//! 这个文件是**生成物**——`snipshot install` / `snipshot match regenerate` 会按
+//! 这个文件是**生成物**——`semisnip install` / `semisnip match regenerate` 会按
 //! 当前可执行文件路径和 trigger 把它整份重写。所以 `edit` 之后必须提醒用户：
-//! 想长期改 trigger 请改 snipshot 的 config，手改这里只是临时调试。
+//! 想长期改 trigger 请改 semisnip 的 config，手改这里只是临时调试。
 //!
 //! 另一个坑是 espanso 的 shell 变量会把 stdout 原样注入文档，所以这个文件里
 //! 命令**必须重定向掉 stdout**，`check` 会把漏掉重定向的写成警告。
@@ -18,7 +18,7 @@ use crate::espanso::paths;
 
 #[derive(Debug, Subcommand)]
 pub enum MatchCmd {
-    /// 打印 snipshot.yml 的路径
+    /// 打印 semisnip.yml 的路径
     Path,
     /// 打印文件内容（默认动作）
     Show,
@@ -49,7 +49,7 @@ pub fn run(cmd: Option<MatchCmd>) -> ExitCode {
 
 fn missing() -> ExitCode {
     fail(&format!(
-        "{} 还不存在，先执行 `snipshot install`（或 `snipshot match regenerate`）",
+        "{} 还不存在，先执行 `semisnip install`（或 `semisnip match regenerate`）",
         paths::match_file().display()
     ))
 }
@@ -58,7 +58,7 @@ fn show() -> ExitCode {
     let path = paths::match_file();
     match std::fs::read_to_string(&path) {
         Ok(text) => {
-            // 原样输出，方便 `snipshot match show | pbcopy`，不加任何装饰
+            // 原样输出，方便 `semisnip match show | pbcopy`，不加任何装饰
             print!("{text}");
             if !text.ends_with('\n') {
                 println!();
@@ -114,8 +114,8 @@ fn edit() -> ExitCode {
         return missing();
     }
 
-    println!("# 这是生成物：下次 `snipshot install` 会整份覆盖。");
-    println!("# 想长期改触发串请用 `snipshot config set trigger <串>`。");
+    println!("# 这是生成物：下次 `semisnip install` 会整份覆盖。");
+    println!("# 想长期改触发串请用 `semisnip config set trigger <串>`。");
 
     let status = match std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
@@ -215,10 +215,10 @@ fn check(text: &str, expected_trigger: &str) -> Report {
         ));
     }
 
-    if !text.contains("snipshot") {
+    if !text.contains("semisnip") {
         report
             .warns
-            .push("文件里没出现 snipshot，确认它还在调用本程序".into());
+            .push("文件里没出现 semisnip，确认它还在调用本程序".into());
     }
 
     // espanso 会把 shell 变量的 stdout 原样注入文档，少一个重定向就是往用户
@@ -254,7 +254,7 @@ mod tests {
     use super::*;
 
     fn generated() -> String {
-        super::super::render_match_file("/Applications/Snipshot.app/Contents/MacOS/snipshot", ";;")
+        super::super::render_match_file("/Applications/Semisnip.app/Contents/MacOS/semisnip", ";;")
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
         }
 
         let parse = |extra: &[&str]| {
-            let mut args = vec!["snipshot", "match"];
+            let mut args = vec!["semisnip", "match"];
             args.extend_from_slice(extra);
             match Wrapper::try_parse_from(args).unwrap().cmd {
                 Cmd::Match { action } => action,

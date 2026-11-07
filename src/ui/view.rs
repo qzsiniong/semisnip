@@ -40,7 +40,7 @@ impl Render for AppState {
                 let selected = index == self.selected;
                 let usable = hit.snippet.usable;
                 div()
-                    .id(("snipshot-row", index))
+                    .id(("semisnip-row", index))
                     .flex()
                     .flex_row()
                     .items_center()

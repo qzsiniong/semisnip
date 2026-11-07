@@ -1,4 +1,6 @@
-# snipshot
+# semisnip
+
+<img src="packaging/macos/icon-preview.png" width="96" alt="semisnip 图标：斜体 I 加两个分号">
 
 **espanso 的片段检索层。** 敲 `;;` 打开一个不抢焦点的小浮层，边打边过滤、右侧预览，回车把选中的 trigger 交回 espanso 求值并注入。
 
@@ -6,11 +8,13 @@
 任意输入框  →  ;;  →  过滤 + 预览  →  回车  →  espanso 展开
 ```
 
-snipshot 不存片段、不渲染变量、不注入文本——这些仍然全部由 espanso 负责。它只替换 espanso 自带的搜索框那一层。
+> 名字是 **semicolon + snippet**：`semi` 取自 semicolon（分号，也就是触发符 `;;`），`snip` 取自 snippet（片段）。两截一拼正好是「用一个分号去取一条片段」，而图标里的斜体 `I` 就是敲分号的那根光标。
+
+semisnip 不存片段、不渲染变量、不注入文本——这些仍然全部由 espanso 负责。它只替换 espanso 自带的搜索框那一层。
 
 ## 为什么不用 espanso 自带的搜索框
 
-| | espanso search bar | snipshot |
+| | espanso search bar | semisnip |
 |---|---|---|
 | 焦点 | 抢焦点，目标 App 失焦 | 非激活浮层，目标 App 全程不失焦 |
 | 数据 | espanso 运行时 | 直接读 `match/**/*.yml`，文件改动即热更新 |
@@ -23,14 +27,14 @@ snipshot 不存片段、不渲染变量、不注入文本——这些仍然全�
 需要 macOS 与 espanso 2.4+（可执行文件在 `PATH` 或 `/opt/homebrew/bin`、`/usr/local/bin` 下）。
 
 ```bash
-git clone <repo> && cd snipshot
+git clone <repo> && cd semisnip
 ./scripts/bundle-macos.sh --install
 ```
 
-之后手动完成两步（系统不允许脚本代劳）：**系统设置 → 隐私与安全性 → 辅助功能** 里勾选 `Snipshot`，然后 `espanso restart`。最后体检：
+之后手动完成两步（系统不允许脚本代劳）：**系统设置 → 隐私与安全性 → 辅助功能** 里勾选 `Semisnip`，然后 `espanso restart`。最后体检：
 
 ```bash
-snipshot doctor
+semisnip doctor
 ```
 
 看到 `全部正常。` 即可使用。安装脚本的每一步、签名与权限问题、`command not found` 的补救，见 **[安装](docs/install.md)**。
@@ -46,20 +50,20 @@ snipshot doctor
 | `Esc` | 关闭，并回删触发符残留 |
 | `Cmd` / `Ctrl` + 任意键 | 放行给系统并关闭面板，不吞系统快捷键 |
 
-打 `log` 就能命中 `;;log`，打 `rq` 能命中「日期」（拼音索引）。过滤规则、排序权重、三种唤起方式见 **[使用](docs/usage.md)**。
+打 `date` 就能命中 `:date`，打 `rq` 能命中「日期」（拼音索引）。过滤规则、排序权重、三种唤起方式见 **[使用](docs/usage.md)**。
 
 ## 命令
 
 | 命令 | 用途 |
 |---|---|
-| `snipshot doctor` | 体检：espanso / 权限 / 索引 / daemon |
-| `snipshot trigger` | 请求打开面板（不切回输入框也能开） |
-| `snipshot reload` | 重建片段索引 |
-| `snipshot config` | 查看与修改配置 |
-| `snipshot match` | 看/改写进 espanso 的 `snipshot.yml` |
-| `snipshot log` | 看 daemon 日志（`-f` 跟随、`-l warn` 过滤） |
-| `snipshot completion` | 给当前 shell 装补全 |
-| `snipshot uninstall` | 卸载（默认只演练） |
+| `semisnip doctor` | 体检：espanso / 权限 / 索引 / daemon |
+| `semisnip trigger` | 请求打开面板（不切回输入框也能开） |
+| `semisnip reload` | 重建片段索引 |
+| `semisnip config` | 查看与修改配置 |
+| `semisnip match` | 看/改写进 espanso 的 `semisnip.yml` |
+| `semisnip log` | 看 daemon 日志（`-f` 跟随、`-l warn` 过滤） |
+| `semisnip completion` | 给当前 shell 装补全 |
+| `semisnip uninstall` | 卸载（默认只演练） |
 
 不带参数时**只打印帮助**——daemon 是常驻进程，会抢键盘、要授权，不该是一条裸命令的默认后果。完整命令树、各子命令的行为与校验规则见 **[命令行](docs/cli.md)**，配置字段见 **[配置](docs/configuration.md)**。
 
@@ -68,7 +72,7 @@ snipshot doctor
 ```mermaid
 flowchart TB
     key["任意 App 输入框<br/>敲 ;;"] --> tap["CGEventTap<br/>只认物理键码"]
-    cli["snipshot trigger<br/>UDS + NDJSON"]
+    cli["semisnip trigger<br/>UDS + NDJSON"]
     tray["菜单栏图标<br/>GPUI action"]
     yml["$ESPANSO_CONFIG<br/>match/**/*.yml"]
 

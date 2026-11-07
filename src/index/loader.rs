@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn loads_nested_files_and_skips_underscore() {
-        let dir = std::env::temp_dir().join(format!("snipshot-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("semisnip-test-{}", std::process::id()));
         let nested = dir.join("match").join("packages").join("demo");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn label_falls_back_to_first_line() {
-        let dir = std::env::temp_dir().join(format!("snipshot-test-label-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("semisnip-test-label-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("match")).unwrap();
         std::fs::write(
             dir.join("match").join("a.yml"),

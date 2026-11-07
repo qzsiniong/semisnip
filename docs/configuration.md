@@ -3,18 +3,18 @@
 ## 位置
 
 ```
-~/Library/Application Support/snipshot/config.yml        配置
-~/Library/Application Support/snipshot/config.schema.json  schema（给编辑器用）
+~/Library/Application Support/semisnip/config.yml        配置
+~/Library/Application Support/semisnip/config.schema.json  schema（给编辑器用）
 ```
 
-`snipshot install` 时生成；不存在时用默认值。写入策略是**先落临时文件再改名**，daemon 不会读到半截 YAML。
+`semisnip install` 时生成；不存在时用默认值。写入策略是**先落临时文件再改名**，daemon 不会读到半截 YAML。
 
 ## 长这样
 
 ```yaml
-# snipshot 配置。daemon 只在启动时读一次，改完执行：
-#   snipshot config set <key> <value>              # 推荐：带类型与范围校验
-#   launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon
+# semisnip 配置。daemon 只在启动时读一次，改完执行：
+#   semisnip config set <key> <value>              # 推荐：带类型与范围校验
+#   launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
 # 改坏了也不至于起不来：解析失败时 daemon 会用默认值，并把原因写进日志。
 # yaml-language-server: $schema=./config.schema.json
 trigger: ;;
@@ -49,7 +49,7 @@ allow_paste_fallback: true
 schema 由二进制内嵌（`assets/config.schema.json`），`install` 与每次 `config` 写入都会把它落到配置旁边，所以**不依赖仓库目录**，也不怕 app 被搬走。查看路径：
 
 ```bash
-snipshot config schema
+semisnip config schema
 ```
 
 用**相对路径**而不是绝对路径，是因为 `~/Library/Application Support` 里有空格，编辑器解析绝对路径容易歪。schema 与配置永远同目录，相对引用最稳。
@@ -73,15 +73,15 @@ snipshot config schema
 ## 怎么改
 
 ```bash
-snipshot config                      # 当前值，与默认值不同的项标 *
-snipshot config get trigger          # 取值（字符串不带引号，方便塞进脚本）
-snipshot config set max_results 12   # 改一个键
-snipshot config unset max_results    # 恢复默认
-snipshot config reset                # 全部恢复默认
-snipshot config keys                 # 列出所有键与含义
-snipshot config edit                 # $EDITOR 打开，退出时校验 YAML
-snipshot config path                 # 配置文件路径
-snipshot config schema               # schema 路径
+semisnip config                      # 当前值，与默认值不同的项标 *
+semisnip config get trigger          # 取值（字符串不带引号，方便塞进脚本）
+semisnip config set max_results 12   # 改一个键
+semisnip config unset max_results    # 恢复默认
+semisnip config reset                # 全部恢复默认
+semisnip config keys                 # 列出所有键与含义
+semisnip config edit                 # $EDITOR 打开，退出时校验 YAML
+semisnip config path                 # 配置文件路径
+semisnip config schema               # schema 路径
 ```
 
 `set` 先按默认值的类型解析（`true/false`、整数、小数、字符串），再做语义校验：
@@ -95,12 +95,12 @@ snipshot config schema               # schema 路径
 **配置在 daemon 启动时只读一次**。改完 `config set` 会打印完整的重启命令：
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon
+launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon
 ```
 
 ## 从旧的 config.json 迁移
 
-0.1 之前的版本写的是 `config.json`。首次读取时（daemon 启动或任意 `snipshot config` 命令）会自动迁移：
+0.1 之前的版本写的是 `config.json`。首次读取时（daemon 启动或任意 `semisnip config` 命令）会自动迁移：
 
 1. 解析 `config.json`
 2. 按新格式写 `config.yml`（带抬头与 schema 提示）
@@ -108,14 +108,14 @@ launchctl kickstart -k gui/$(id -u)/com.snipshot.daemon
 
 迁移不能省：静默退回默认值等于「用户没动它，trigger 却变回去了」，而 trigger 一变，espanso 的降级 match 就对不上。
 
-## snipshot 自己有哪些文件
+## semisnip 自己有哪些文件
 
 ```
-~/Library/Application Support/snipshot/config.yml          偏好
-~/Library/Application Support/snipshot/config.schema.json  编辑器补全用
-~/Library/Application Support/snipshot/usage.json          使用频率（内部格式，不用手改）
-~/Library/Application Support/snipshot/snipshot.log        日志
-~/Library/Caches/snipshot/snipshot.sock                    daemon socket
+~/Library/Application Support/semisnip/config.yml          偏好
+~/Library/Application Support/semisnip/config.schema.json  编辑器补全用
+~/Library/Application Support/semisnip/usage.json          使用频率（内部格式，不用手改）
+~/Library/Application Support/semisnip/semisnip.log        日志
+~/Library/Caches/semisnip/semisnip.sock                    daemon socket
 ```
 
-片段永远只存在于 espanso 的 `match/**/*.yml` 里。snipshot 唯一写进那个目录的文件是 `snipshot.yml`（降级触发定义），见 [命令行 · match](cli.md#match)。
+片段永远只存在于 espanso 的 `match/**/*.yml` 里。semisnip 唯一写进那个目录的文件是 `semisnip.yml`（降级触发定义），见 [命令行 · match](cli.md#match)。
