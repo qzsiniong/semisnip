@@ -2,7 +2,7 @@
 //!
 //! 顺序很重要，而且只有一种正确顺序：
 //!   1) 面板已经 orderOut（调用方负责），否则注入会打在面板上；
-//!   2) 回删被吞掉的触发符（`erase` 个）；
+//!   2) 回删落进文档的触发符（`erase` 个——触发键不吞，见 `trigger::machine`）；
 //!   3) 打 `trigger_len` 个**占位空格**；
 //!   4) `espanso match exec -t <trigger>` —— espanso 求值，并按 trigger 全长
 //!      回删字符（TriggerCompensation）——删掉的恰好是那串占位空格——
@@ -21,9 +21,11 @@
 //! 因为面板是非激活的，前台 App 全程没变，所以这里**不需要**还原焦点、
 //! 也不需要 espanso 官方 search bar 那套 200ms 等待。
 //!
-//! 反方向的动作是 [`keep_trigger`]：取消面板时把触发词**补回**文档。两者都只能
-//! 通过本模块合成按键，所以放在一起——方向写反的后果是"按 Esc 吃掉半截触发词"
-//! 或"回车之后文档里多一个分号"。
+//! 取消面板**不经过这里**：触发串的键从未被吞（见 `trigger::machine`），
+//! 文档里本来就是用户打的 `;;`，取消是纯关闭。历史上这里有个反方向的
+//! `keep_trigger`（把被吞的触发键补回文档），不吞键之后整个消失了——
+//! 如果哪天要恢复"吞键"设计，记得连同触发静默窗口一起，否则单字符触发串
+//! 会「补回 → 立即命中 → 面板又开」死循环。
 
 pub mod inject;
 
@@ -58,7 +60,7 @@ pub enum Outcome {
 pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&str>) -> Outcome {
     let trigger_len = hit.trigger.chars().count();
 
-    // 1) 文档里只剩面板吞掉的那几个触发符，先删干净。
+    // 1) 删掉文档里的触发符残留（触发键不吞，它们真的在文档里）。
     if erase > 0 {
         inject::backspace(erase);
     }
@@ -99,30 +101,6 @@ pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&
             }
         }
     }
-}
-
-/// 取消面板时用：把触发词补回文档，而不是删掉它。
-///
-/// `tail` 是缺的那一截（`AppState::missing_trigger` 算好的后缀），必须是触发串
-/// 的**后缀**而不是整串——tap 只吞了最后一个键，前几个早就落进文档了，
-/// 整串补一遍会把 `;;` 变成 `;;;`。
-///
-/// 与 [`confirm`] 的区别值得记住：确认要的是"干净的光标位置"（先删掉残留再让
-/// espanso 从零展开），取消要的是"当作没发生过"（把用户打的字还原回去）。
-/// 两条路都只能通过这里合成按键，所以放在同一个模块里，免得把方向写反。
-///
-/// 空串直接返回：调用方可能已经判断过，但这里兜一下更安全——合成空操作在
-/// 某些切换焦点的瞬间会变成多余事件。
-pub fn keep_trigger(tail: &str) {
-    if tail.is_empty() {
-        return;
-    }
-    log::info!("取消面板：把触发词尾巴 `{tail}` 补回文档");
-    // 先静默触发判定，再合成按键。不静默的话，单字符触发串（`/`）会当场再次命中：
-    // 取消 → 补 `/` → 面板又开 → 再取消，用户看到的是"关不掉"。
-    // 250ms 覆盖 `type_text` 的 8ms×字符数（最多 3 个）加上系统排队余量。
-    crate::trigger::tap::mute_trigger(250);
-    inject::type_text(tail);
 }
 
 /// 粘贴兜底：写剪贴板 → 等 15ms → 合成 `Cmd+V`。

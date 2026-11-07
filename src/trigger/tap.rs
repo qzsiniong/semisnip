@@ -9,20 +9,26 @@
 //! 而且 tap 已经有辅助功能授权，不需要再申请一种权限。
 //!
 //! 四处必须小心：
-//! 1. 自己合成的事件（回删 / 粘贴 / 补触发词）会被自己的 tap 看到 → 用 source pid
-//!    过滤，另加触发静默窗口（合成事件不一定带得到 pid，见 [`TapShared::mute_trigger`]）；
-//! 2. 外部进程（espanso / 其他注入工具）合成的事件**一律放行**，即使面板开着——
-//!    它们可能是某轮尚未结束的展开（补偿退格 + 展开文本），吞了就是"文档留半截
-//!    触发词"或"展开结果缺一截"（见 [`route_panel_key`]）；
+//! 1. 自己合成的事件（回删 / 粘贴 / 占位空格）会被自己的 tap 看到 → 用 source pid
+//!    过滤（合成事件不一定带得到 pid，但它们的键码也凑不齐触发串，见
+//!    `handoff::confirm`）；
+//! 2. 外部进程（espanso / 其他注入工具）合成的事件**一律放行**，即使面板开着，
+//!    也**不喂触发状态机**——它们可能是某轮尚未结束的展开（补偿退格 + 展开文本），
+//!    吞了就是"文档留半截触发词"或"展开结果缺一截"，喂进状态机则可能被展开
+//!    文本里的字符误触发（见 [`route_panel_key`]）；
 //! 3. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
 //! 4. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
 //! 5. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
+//!
+//! 触发命中时也**不吞键**：触发串的所有字符都落进目标文档（见
+//! `trigger::machine`）。tap 对文档的全部写入只剩确认路径的"回删 + 占位空格"，
+//! 取消路径是纯关闭——文档始终是诚实的。
 //!
 //! 注意：这里**不**拦截 espanso 给 `match exec` 发的补偿退格（占位空格方案，
 //! 见 `handoff::confirm`）。早期版本用"时间窗口 + 数量"的预算去猜哪串退格是
 //! 自己那轮的，两种触发方式交替使用时会互相误伤，已废弃。
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -66,8 +72,10 @@ pub struct TapShared {
     machine: Mutex<TriggerMachine>,
     /// 事件发送端。tap 线程不直接改 UI 状态，只投事件。
     tx: Sender<Event>,
-    /// 触发判定的静默截止时间（epoch ms）。见 [`TapShared::mute_trigger`]。
-    mute_until_ms: AtomicI64,
+    /// 放行下一个物理 keyUp。触发命中的那个键是**放行**的（字符要落进文档），
+    /// 它的 keyUp 到达时面板已经打开——没有这个标志就会被面板分支吞掉，
+    /// 目标 App 会看到"按下没抬起"。
+    pass_next_key_up: AtomicBool,
     /// 面板窗口的屏幕矩形。鼠标按下时用来区分"点面板里"和"点面板外"。
     panel_rect: Mutex<PanelRect>,
 }
@@ -78,9 +86,14 @@ impl TapShared {
             panel_open: AtomicBool::new(false),
             machine: Mutex::new(TriggerMachine::new(config)),
             tx,
-            mute_until_ms: AtomicI64::new(0),
+            pass_next_key_up: AtomicBool::new(false),
             panel_rect: Mutex::new(PanelRect::default()),
         }
+    }
+
+    /// 放行下一个物理 keyUp（触发命中时调），返回是否确实有预约。
+    fn take_pass_key_up(&self) -> bool {
+        self.pass_next_key_up.swap(false, Ordering::SeqCst)
     }
 
     /// 记下面板窗口的位置（开窗时调一次）。
@@ -97,23 +110,6 @@ impl TapShared {
             .lock()
             .map(|rect| rect.contains(x, y))
             .unwrap_or(true)
-    }
-
-    /// 接下来 `ms` 毫秒内**不要**把按键喂给触发状态机。
-    ///
-    /// 取消面板时要把触发词补回文档（见 `handoff::keep_trigger`），那些字符是
-    /// 我们自己合成的。不能只指望 source pid 过滤：`CGEventSourceCreate` 造出来的
-    /// 事件在某些系统版本上 `kCGEventSourceUnixProcessID` 是 0，于是会被当成
-    /// 用户输入。单字符触发串（`/`）一旦漏过去就是死循环——补 `/` → 立即命中 →
-    /// 面板又开 → 再取消……
-    fn mute_trigger(&self, ms: i64) {
-        self.mute_until_ms
-            .store(crate::usage::now_ms() + ms, Ordering::SeqCst);
-    }
-
-    /// 触发判定是否处于静默期。
-    fn trigger_muted(&self) -> bool {
-        crate::usage::now_ms() < self.mute_until_ms.load(Ordering::SeqCst)
     }
 
     /// 运行期换触发键（设置窗口改完之后调）。
@@ -175,16 +171,6 @@ pub fn ready() -> bool {
 pub fn set_trigger(config: TriggerConfig) {
     if let Some(shared) = SHARED.get() {
         shared.set_trigger(config);
-    }
-}
-
-/// 接下来 `ms` 毫秒内不判定触发。
-///
-/// 只有一处调用：[`crate::handoff::keep_trigger`]——它要把触发词合成回文档，
-/// 那些按键必须先被"当成不是用户打的"。见 [`TapShared::mute_trigger`]。
-pub fn mute_trigger(ms: u64) {
-    if let Some(shared) = SHARED.get() {
-        shared.mute_trigger(ms as i64);
     }
 }
 
@@ -433,11 +419,6 @@ mod imp {
                     KeyRoute::Pass => {}
                 }
 
-                if ctx.shared.trigger_muted() {
-                    // 补触发词期间的合成按键：放行（字符要落到文档里），但不判定。
-                    return event;
-                }
-
                 if msg.is_shortcut() || msg.alt {
                     return event;
                 }
@@ -453,11 +434,15 @@ mod imp {
                     TriggerAction::Fired { erase } => {
                         log::info!("触发命中：keycode={code} erase={erase}");
                         ctx.shared.panel_open.store(true, Ordering::SeqCst);
+                        // 这个键照常落进文档（见 `trigger::machine`），它的 keyUp
+                        // 到达时面板已经打开，得预约放行，否则目标 App 看到
+                        // "按下没抬起"。
+                        ctx.shared.pass_next_key_up.store(true, Ordering::SeqCst);
                         let _ = ctx.shared.tx.send(Event::Open {
                             origin: crate::ipc::proto::Origin::Tap,
                             erase,
                         });
-                        std::ptr::null_mut()
+                        event
                     }
                     TriggerAction::Pass => event,
                 }
@@ -466,8 +451,12 @@ mod imp {
                 if ctx.shared.panel_open.load(Ordering::SeqCst)
                     && CGEventGetIntegerValueField(event, FIELD_SOURCE_PID) <= 0
                 {
-                    // 只吞物理按键的 keyUp；外部合成事件的 keyUp 必须放行，
-                    // 否则它的 keyDown 已放行、keyUp 被吞，目标 App 会看到"按住不放"。
+                    // 触发命中的那个键是放行的，它的 keyUp 也必须放行，否则目标
+                    // App 看到"按下没抬起"；其余物理 keyUp 与被吞的 keyDown 配对，
+                    // 一并吞掉。外部合成事件的 keyUp 一律放行（见 KEY_DOWN）。
+                    if ctx.shared.take_pass_key_up() {
+                        return event;
+                    }
                     return std::ptr::null_mut();
                 }
                 event
@@ -617,16 +606,15 @@ mod tests {
     }
 
     #[test]
-    fn muting_skips_trigger_detection_until_it_expires() {
+    fn pass_key_up_is_one_shot() {
         let shared = shared();
-        assert!(!shared.trigger_muted(), "默认不静默");
-        shared.mute_trigger(250);
-        assert!(shared.trigger_muted(), "刚设上必须静默");
-        // 把截止时间拨到过去，等价于"窗口已经过去"
-        shared
-            .mute_until_ms
-            .store(crate::usage::now_ms() - 1, Ordering::SeqCst);
-        assert!(!shared.trigger_muted(), "过期后必须恢复判定");
+        assert!(!shared.take_pass_key_up(), "没有预约时不能放行");
+        shared.pass_next_key_up.store(true, Ordering::SeqCst);
+        assert!(shared.take_pass_key_up(), "触发命中的 keyUp 要放行");
+        assert!(
+            !shared.take_pass_key_up(),
+            "预约是一次性的：只放行第一个 keyUp"
+        );
     }
 
     #[test]

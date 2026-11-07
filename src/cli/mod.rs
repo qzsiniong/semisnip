@@ -338,20 +338,46 @@ fn resolve_exe(exe: std::path::PathBuf) -> std::path::PathBuf {
     exe.canonicalize().unwrap_or(exe)
 }
 
+/// 降级触发串：在 semisnip 触发串的末尾再重复最后一个字符（`;;` → `;;;`）。
+///
+/// 为什么要多打一个键——semisnip 的 tap **不吞任何触发键**（见
+/// `trigger::machine`），触发串会完整地到达 espanso。如果降级匹配也用 `;;`，
+/// 每次打开面板 espanso 都会命中它：把文档里的 `;;` 擦掉再跑 shell——用户会
+/// 眼睁睁看着自己的分号消失。多出来的那个字符在面板打开期间永远凑不齐（面板
+/// 吞掉一切物理按键），tap 在线时这份匹配就等于不存在；只有 tap 离线（降级
+/// 模式）时它才可能被凑齐、才需要生效。
+pub fn degraded_trigger(trigger: &str) -> String {
+    let mut degraded = trigger.to_string();
+    if let Some(last) = trigger.chars().last() {
+        degraded.push(last);
+    }
+    degraded
+}
+
 /// 生成降级路径的 match 定义：tap 不可用时由 espanso 唤醒 semisnip。
+///
+/// `replace` 里把触发串**原样注回**（`;;;{{output}}`）不是笔误：espanso 命中
+/// 被动匹配时会先按 trigger 全长回删字符，不注回的话用户打的 `;;;` 就消失了。
+/// 注回是零损伤的——espanso 不处理自己注入的事件（否则任何自我重叠的 trigger
+/// 都会死循环），semisnip 这边外部注入也不进触发状态机（见 `trigger::tap`）。
 pub fn render_match_file(exe: &str, trigger: &str) -> String {
+    let degraded = degraded_trigger(trigger);
     format!(
         r#"# 由 `semisnip install` 生成。
 #
 # 作用：当 semisnip 的键盘 tap 不可用（缺辅助功能权限）时，
-# 由 espanso 的 shell 扩展唤醒面板。tap 正常工作时，`{trigger}` 的最后一个键
-# 已被 semisnip 吞掉，espanso 根本看不到这个 trigger，本文件不会生效。
+# 由 espanso 的 shell 扩展唤醒面板。触发串是 `{degraded}`（比正常触发多打一个
+# 末字符）：tap 正常工作时面板会吞掉后续按键，espanso 永远凑不齐它，本文件
+# 不会生效；tap 离线时打 `{degraded}` 才能打开面板。
+#
+# replace 里的 `{degraded}` 也是刻意的：espanso 命中时会先按 trigger 全长回删
+# 字符，原样注回才能让文档保持不动。espanso 不处理自己注入的事件，不会循环。
 #
 # 注意：shell 变量的 stdout 会被原样注入文档，所以命令必须保持静默。
 # yaml-language-server: $schema=https://raw.githubusercontent.com/espanso/espanso/dev/schemas/match.schema.json
 matches:
-  - trigger: "{trigger}"
-    replace: "{{{{output}}}}"
+  - trigger: "{degraded}"
+    replace: "{degraded}{{{{output}}}}"
     label: "semisnip · 打开片段面板（降级触发）"
     vars:
       - name: output
@@ -541,8 +567,10 @@ mod tests {
             yaml.contains("2>>/dev/null"),
             "命令必须吞掉 stdout 之外的噪声"
         );
-        assert!(yaml.contains("{{output}}"));
-        assert!(yaml.contains("trigger: \";;\""));
+        // 触发串比配置多打一个末字符（`;;` → `;;;`），tap 在线时 espanso 永远凑不齐
+        assert!(yaml.contains("trigger: \";;;\""));
+        // replace 必须把触发串原样注回：espanso 命中时会先回删 trigger 全长
+        assert!(yaml.contains("replace: \";;;{{output}}\""));
         // 能被 espanso 的 match schema 解析成合法 YAML
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
         assert!(parsed.get("matches").is_some());

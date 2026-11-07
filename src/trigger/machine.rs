@@ -1,11 +1,16 @@
 //! 触发状态机：识别「连续输入触发串」。
 //!
-//! 与 snippets 的实现有一处关键差异：**命中时把最后一个触发键也吞掉**。
+//! 命中时**一个键都不吞**：触发串的每个字符都照常落进目标文档（`;;` 就是
+//! 两个分号都留下），`erase` 恒等于 `keys.len()`。这是刻意的：
 //!
-//! 因为 semisnip 的 tap 可以吞键，第一次 `;` 已经落到目标文档里（不能吞，
-//! 用户可能只打一个分号），第二次 `;` 直接吞掉，于是文档里只剩 1 个字符，
-//! `erase` 恒等于 `keys.len() - 1`。这样面板出现的瞬间就不会有漏键，
-//! 也不存在"过滤串进了目标 App"的竞态。
+//! - 文档从面板出现那一刻起就是诚实的——用户打了什么，文档里就是什么；
+//! - 取消面板 = 纯关闭，不需要补回任何字符（也就不需要合成按键、
+//!   不需要触发静默窗口，见 `scheduler::cancel`）；
+//! - 确认时回删的个数有据可查：文档里确实躺着 `erase` 个触发符字符。
+//!
+//! 代价是与 espanso 侧的降级匹配（`semisnip.yml`）耦合：触发串会完整地到达
+//! espanso，所以那份匹配的 trigger 必须是「触发串 + 末字符再重复一次」
+//! （`;;` → `;;;`），见 `cli::render_match_file`。
 
 use std::time::{Duration, Instant};
 
@@ -78,12 +83,9 @@ pub enum TriggerAction {
     /// 注意"部分命中"（`;;` 只打了一个 `;`）也返回 `Pass`：第一个分号必须留在
     /// 文档里，用户随时可能只是打个分号而不再按第二个。
     Pass,
-    /// 命中：调用方要吞掉这个键。
-    ///
-    /// `erase` 是**已经落进目标文档**的触发符个数——除了最后一个触发键（这个
-    /// 键被吞了），前面的都写进文档了。同一个数字有两个用途：确认时回删
-    /// （给 espanso 一个干净的光标位置），取消时拿它算出还缺几个字（补齐）。
-    /// 单字符触发串（如 `/`）的 `erase` 是 0：一个字符都没落下。
+    /// 命中。**键照常放行**——触发串的所有字符都落进目标文档，调用方（tap）
+    /// 只需要开面板，并记住 `erase`：文档里躺着的触发符字符数（= 触发串全长）。
+    /// 确认时回删这么多、取消时什么都不用做（字符本来就在文档里）。
     Fired { erase: usize },
 }
 
@@ -151,7 +153,8 @@ impl TriggerMachine {
             self.armed += 1;
             self.last = Some(now);
             if self.armed == self.config.keycodes.len() {
-                let erase = self.config.keycodes.len() - 1;
+                // 触发串全长都落进了文档：确认时要回删的就是这个数。
+                let erase = self.config.keycodes.len();
                 self.reset();
                 return TriggerAction::Fired { erase };
             }
@@ -178,14 +181,14 @@ mod tests {
     }
 
     #[test]
-    fn second_semicolon_fires_and_is_swallowed() {
+    fn second_semicolon_fires_without_swallowing() {
         let mut m = TriggerMachine::new(TriggerConfig::default());
         let t = Instant::now();
         assert_eq!(m.feed(semi(), t), TriggerAction::Pass);
         assert_eq!(
             m.feed(semi(), t + Duration::from_millis(60)),
-            TriggerAction::Fired { erase: 1 },
-            "最后一个触发键被吞，只需回删 1 个字符"
+            TriggerAction::Fired { erase: 2 },
+            "两个分号都落进文档，确认时要回删 2 个字符"
         );
         assert_eq!(m.armed_len(), 0);
     }
@@ -212,11 +215,12 @@ mod tests {
     }
 
     #[test]
-    fn single_char_trigger_needs_no_erase() {
+    fn single_char_trigger_erases_itself() {
         let mut m = TriggerMachine::new(TriggerConfig::from_text("/", 800).unwrap());
         assert_eq!(
             m.feed(keymap::keycode_for_char('/').unwrap(), Instant::now()),
-            TriggerAction::Fired { erase: 0 }
+            TriggerAction::Fired { erase: 1 },
+            "单字符触发串同样落进文档：erase = 全长 = 1"
         );
     }
 

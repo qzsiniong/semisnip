@@ -145,7 +145,7 @@ fn edit() -> ExitCode {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return fail(&format!("读回 {} 失败", path.display()));
     };
-    let report = check(&text, &Config::load().trigger);
+    let report = check(&text, &super::degraded_trigger(&Config::load().trigger));
     report.print();
     if !report.errors.is_empty() {
         return ExitCode::FAILURE;
@@ -214,9 +214,11 @@ fn check(text: &str, expected_trigger: &str) -> Report {
     if trigger.is_empty() {
         report.errors.push("第一条 match 没有 `trigger`".into());
     } else if trigger != expected_trigger {
-        // tap 路径按 config 的 trigger 吞键，两边不一致时降级触发会永远打不开。
+        // 这里的期望值是**降级触发串**（配置触发串 + 末字符重复一次，见
+        // `degraded_trigger`）。两边不一致时，tap 失效后降级触发对不上号，
+        // 面板就再也唤不出来了——值得一条警告。
         report.warns.push(format!(
-            "trigger 是 `{trigger}`，但配置里是 `{expected_trigger}`：tap 失效时这个降级触发对不上"
+            "trigger 是 `{trigger}`，但配置对应的降级触发是 `{expected_trigger}`：tap 失效时这个降级触发对不上"
         ));
     }
 
@@ -265,9 +267,18 @@ mod tests {
     #[test]
     fn generated_file_passes_its_own_check() {
         // 自己生成的东西必须能过自己的校验，否则等于给用户埋雷
-        let report = check(&generated(), ";;");
+        let report = check(&generated(), ";;;");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.warns.is_empty(), "{:?}", report.warns);
+    }
+
+    #[test]
+    fn degraded_trigger_repeats_the_last_char() {
+        assert_eq!(super::super::degraded_trigger(";;"), ";;;");
+        assert_eq!(super::super::degraded_trigger("/"), "//");
+        assert_eq!(super::super::degraded_trigger(";;;x"), ";;;xx");
+        // 空串不该 panic（虽然配置层不允许空触发串）
+        assert_eq!(super::super::degraded_trigger(""), "");
     }
 
     #[test]
@@ -287,11 +298,11 @@ mod tests {
 
     #[test]
     fn trigger_mismatch_is_a_warning_not_an_error() {
-        let text = generated().replace("trigger: \";;\"", "trigger: \",,\"");
-        let report = check(&text, ";;");
+        let text = generated().replace("trigger: \";;;\"", "trigger: \",,,\"");
+        let report = check(&text, ";;;");
         assert!(report.errors.is_empty());
         assert_eq!(report.warns.len(), 1);
-        assert!(report.warns[0].contains(",,"));
+        assert!(report.warns[0].contains(",,,"));
     }
 
     #[test]

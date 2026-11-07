@@ -59,7 +59,7 @@ mod imp {
         }
     }
 
-    /// 回删 `count` 个字符（面板吞掉的触发符残留）。
+    /// 回删 `count` 个字符（落进文档的触发符残留，见 `trigger::machine`）。
     pub fn backspace(count: usize) {
         for _ in 0..count {
             press(crate::trigger::keymap::BACKSPACE as u16, 0);

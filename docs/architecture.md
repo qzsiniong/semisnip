@@ -36,7 +36,7 @@ flowchart TB
 
 | 模块 | 文件 | 职责与边界 |
 |---|---|---|
-| 触发 | `trigger/tap.rs`、`trigger/machine.rs`、`trigger/keymap.rs` | 只认物理键码，不知道片段存在；`;;` 的第二个键被吞、第一个键记为"已在文档里"的残留。同一个 tap 还订阅鼠标按下——只为「点面板外 = 收起面板」，判定靠开窗时记住的窗口矩形，鼠标事件永远放行 |
+| 触发 | `trigger/tap.rs`、`trigger/machine.rs`、`trigger/keymap.rs` | 只认物理键码，不知道片段存在；命中时**一个键都不吞**——触发串的所有字符都落进文档，`erase` = 触发串全长。同一个 tap 还订阅鼠标按下——只为「点面板外 = 收起面板」，判定靠开窗时记住的窗口矩形，鼠标事件永远放行 |
 | 通信 | `ipc/proto.rs`、`ipc/server.rs`、`ipc/client.rs` | UDS + NDJSON，带版本号；单实例，daemon 不在时由 CLI 自愈拉起 |
 | 数据 | `index/loader.rs`、`index/service.rs` | 唯一读 YAML 的地方，产出 `Arc<Snapshot>`；后台重建，UI 永远只读 |
 | 检索 | `search/score.rs`、`search/query.rs`、`search/pinyin.rs` | 纯函数、零 IO、确定性排序 |
@@ -66,14 +66,14 @@ flowchart TB
 面板不抢焦点，也意味着**点别处不会自动收起来**：`NonactivatingPanel` 不会收到 `resignKey`，光标从来没在它身上。所以收面板要靠自己判：tap 订阅了鼠标按下，拿 `CGEventGetLocation` 与开窗时记下的窗口矩形比一比，落在外面就投 `Event::ClickOutside`。两个细节值得写下来：
 
 - 鼠标事件**一律放行**，绝不吞——面板里还要点 `✕`、点授权页的按钮，抢了点击就全废了；
-- 这一路收尾**不动目标文档**。点下去的那一刻前台窗口正在换人，合成出来的退格或补字符可能落到新窗口里；键盘那几条路（`Esc`、`✕`、菜单栏）前台没变，才敢把触发词补回去。
+- 收面板**不动目标文档**，现在所有关闭路径都如此：触发键一个不吞，文档本来就是用户打的原样，取消不需要任何合成按键（历史上这里有一套"补回被吞触发键 + 触发静默窗口防死循环"的机制，不吞键之后整体消失了）。
 
 ## 回传顺序
 
 只有一种正确顺序，写在 `handoff::confirm` 里：
 
 1. 面板 `orderOut`（由调用方先行关闭）
-2. 回删被吞掉的触发符（`erase` 个）
+2. 回删落进文档的触发符（`erase` 个——触发键不吞，它们真的在文档里）
 3. 打 `trigger_len` 个**占位空格**
 4. `espanso match exec -t <trigger>`——espanso 按 trigger 全长回删（TriggerCompensation），删掉的恰好是那串空格，然后注入展开文本
 5. 失败时：先退掉占位空格（IPC 没成功就没有补偿退格来收走它们），`allow_paste_fallback` 为真则安全渲染 + 剪贴板粘贴，否则只记日志
@@ -117,12 +117,17 @@ sequenceDiagram
 
 `match exec` 没有回执，失败只能靠退出码和 `espanso log`。
 
-**取消走相反的方向。** `handoff::keep_trigger` 不想让光标"干净"，而是要让状态回到"没触发过"：把 tap 吞掉的那个键补回去，`;;` 原样留在文档里。两条路都只能通过 `handoff` 合成按键，所以写在一个模块里——方向写反的表现是"按 Esc 吃掉半截触发词"或"回车之后文档里多一个分号"。
+**取消是纯关闭。** 触发键一个不吞（见 [触发与焦点](#触发与焦点)），文档里本来就是用户打的 `;;`，取消只是收起面板——零合成按键。这意味着取消路径天生免疫时序问题：不需要"先关窗再合成"的顺序约束，也没有"补回去的字符又被自己的 tap 吃掉"的循环风险。
 
 ## 两条回传协议
 
 - **semisnip → espanso**：只有一个 `espanso match exec -t <trigger>`。协议里唯一必须精确传递的是「命中了哪个 trigger」，不是片段 id。
 - **espanso → semisnip**：仅在降级路径存在。没有辅助功能权限时，espanso 的 shell match 调用 `semisnip trigger --origin espanso` 唤醒面板。该 match 的 stdout 必须严格为空。
+
+降级匹配（`match/semisnip.yml`）有两个刻意的设计，改之前想清楚：
+
+- **触发串比配置的多打一个末字符**（`;;` → `;;;`）。触发键不吞，触发串会完整到达 espanso——如果降级匹配也用 `;;`，每次打开面板它都会命中并把文档里的分号擦掉。多出的那个字符在面板打开期间永远凑不齐（面板吞掉一切物理按键），所以 tap 在线时这份匹配等于不存在。
+- **`replace` 把触发串原样注回**（`;;;{{output}}`）。espanso 命中被动匹配会先按 trigger 全长回删，注回才能让文档保持不动。零损伤：espanso 不处理自己注入的事件（否则自我重叠的 trigger 都会死循环），semisnip 这边外部注入也不进触发状态机（见 `trigger::tap`）。
 
 ## 数据源
 

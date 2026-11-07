@@ -66,18 +66,20 @@ pub struct AppState {
     pub hits: Vec<Hit>,
     /// 选中项在 `hits` 里的下标；`hits` 为空时无意义。
     pub selected: usize,
-    /// 触发词里**已经落进目标文档**的字符数（tap 路径是触发串长度 - 1）。
+    /// 落进目标文档的触发符字符数。
     ///
-    /// 同一个数字在两处用途相反：确认时它是要回删的个数（给 espanso 一个干净的
-    /// 光标位置），取消时它是"已经在文档里了、还差几个"的基准
-    /// （见 [`AppState::missing_trigger`]）。降级路径（espanso shell）与菜单栏
-    /// 唤起时为 0——那时文档里要么是完整的 `;;`，要么什么都没有。
+    /// 触发串**一个键都不吞**（见 `trigger::machine`），所以 tap 路径它等于
+    /// 触发串全长：确认时回删这么多（给 espanso 一个干净的光标位置），取消时
+    /// 什么都不用做——字符本来就在文档里。espanso 降级路径是降级触发串的长度
+    /// （调度器按 `origin` 算，见 `scheduler::handle`），菜单栏 / 手动唤起为 0
+    /// ——那时文档里没有触发词。
     pub erase: usize,
     /// 面板是被谁唤起的。
     ///
-    /// 只为一件事存在：取消时判断"该不该把触发词补回文档"。只有 tap 路径会缺
-    /// 字符（它吞掉了最后一个触发键），其余路径文档里本来就是完整的触发词，
-    /// 补一次就会变成 `;;;;`。
+    /// 主要用于日志与 `erase` 的解释：三种来源的文档状态不同——tap 路径触
+    /// 发串完整落在文档里；espanso 降级路径的触发串被 espanso 擦掉又原样注回
+    /// （见 `cli::render_match_file`），效果相同；菜单栏 / 手动唤起则根本没有
+    /// 触发词。
     pub origin: Origin,
     /// 选中项的预览文档；无命中时为 `None`。
     pub preview: Option<PreviewDoc>,
@@ -169,8 +171,10 @@ impl AppState {
     /// 进入打开状态：清空上一轮残留，按最新索引重算候选。
     ///
     /// `origin` 与 `erase` 一起来自触发来源，两个都要记住：
-    /// - tap 路径：文档里已有 `len - 1` 个触发符（`erase`），缺最后一个；
-    /// - espanso 降级 / 菜单栏 / 手动：`erase` 是 0，文档里是完整触发词或空。
+    /// - tap 路径：触发键一个不吞，文档里躺着完整的触发串（`erase` = 全长）；
+    /// - espanso 降级：调度器按降级触发串长度算 `erase`（espanso 擦掉又原样
+    ///   注回，效果同上）；
+    /// - 菜单栏 / 手动：`erase` 是 0，文档里没有触发词。
     pub fn begin_open(&mut self, origin: Origin, erase: usize) {
         self.open = true;
         self.query.clear();
@@ -195,19 +199,6 @@ impl AppState {
         self.erase = 0;
         self.origin = Origin::Manual;
         self.selected = 0;
-    }
-
-    /// 取消面板时该补回文档的触发词尾巴；`None` 表示什么都不用做。
-    ///
-    /// 取消的语义是「当作没触发过」：用户打出的 `;;` 应该留在输入框里，而不是
-    /// 被面板吃掉。tap 路径只吞掉了最后一个键，所以补上缺的那一截就够；
-    /// espanso shell / 菜单栏 / 手动唤起时文档里本来就是完整的触发词（或者压根
-    /// 没有触发词），再补一次会变成 `;;;;`，所以按 `origin` 直接返回 `None`。
-    pub fn missing_trigger(&self) -> Option<String> {
-        if self.origin != Origin::Tap {
-            return None;
-        }
-        trigger_tail(&self.config.trigger, self.erase)
     }
 
     /// 追加一个过滤字符。
@@ -386,21 +377,6 @@ impl AppState {
     }
 }
 
-/// 触发词里第 `present` 个字符之后的部分。
-///
-/// 抽成纯函数是为了能脱离 gpui 单测——`AppState` 要 `Context` 才能构造，
-/// 而这段"补几个字符"的算法恰恰最容易在边界上出错（单字符触发串、已被吞完）。
-///
-/// `present` 覆盖了整串（或更多）时返回 `None`：宁可什么都不打，也不要在用户
-/// 文档里补出多余的字符。
-fn trigger_tail(trigger: &str, present: usize) -> Option<String> {
-    let chars: Vec<char> = trigger.chars().collect();
-    if present >= chars.len() {
-        return None;
-    }
-    Some(chars[present..].iter().collect())
-}
-
 /// 把 `AppState` 挂成 gpui 全局，让任意组件都能取到（`ui::view`、菜单栏回调）。
 ///
 /// 用 `Entity` 而不是裸结构：gpui 需要在状态变化时知道通知谁重绘。
@@ -433,28 +409,4 @@ pub fn run_confirm(hit: Hit, erase: usize, config: Config, fallback: Option<Stri
             }
         })
         .ok();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::trigger_tail;
-
-    #[test]
-    fn missing_trigger_is_the_part_the_tap_swallowed() {
-        // 默认 `;;`：第一个分号已经落进文档，缺的只有被吞掉的第二个。
-        assert_eq!(trigger_tail(";;", 1).as_deref(), Some(";"));
-        // 单字符触发串（`/`）：整个键被吞，文档里一个字符都没有，要补一整串。
-        assert_eq!(trigger_tail("/", 0).as_deref(), Some("/"));
-        // 四字符触发串：被吞的也只有最后一个键——`erase` 就是"已在文档里的个数"。
-        assert_eq!(trigger_tail(";;;x", 3).as_deref(), Some("x"));
-    }
-
-    #[test]
-    fn nothing_to_restore_when_the_trigger_is_already_whole() {
-        // espanso 降级路径：`;;` 完整地打在文档里，再补一次就成了 `;;;;`。
-        assert_eq!(trigger_tail(";;", 2), None);
-        // 防御：残留数比触发串还长（来源报错）时同样什么都不做。
-        assert_eq!(trigger_tail(";;", 9), None);
-        assert_eq!(trigger_tail("", 0), None);
-    }
 }
