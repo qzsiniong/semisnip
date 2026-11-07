@@ -9,18 +9,28 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use clap::Args;
+
 use crate::config;
 
 const APP: &str = "/Applications/Snipshot.app";
 const LINK: &str = "/usr/local/bin/snipshot";
 const LABEL: &str = "com.snipshot.daemon";
 
-const USAGE: &str = "\
-用法:
-  snipshot uninstall            演练：只列出将被删除的内容
-  snipshot uninstall --yes      真正执行
-  snipshot uninstall --yes --purge   同时删除配置、使用频率与日志
-  snipshot uninstall --yes --keep-app  保留 /Applications/Snipshot.app";
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// 真正执行（不加时只演练，列出将要删除的内容）
+    #[arg(short = 'y', long)]
+    yes: bool,
+
+    /// 同时删除配置、使用频率与日志
+    #[arg(long)]
+    purge: bool,
+
+    /// 保留 /Applications/Snipshot.app
+    #[arg(long)]
+    keep_app: bool,
+}
 
 struct Entry {
     /// 展示用的说明
@@ -54,15 +64,10 @@ impl Entry {
     }
 }
 
-pub fn run(args: &[String]) -> ExitCode {
-    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
-        println!("{USAGE}");
-        return ExitCode::SUCCESS;
-    }
-
-    let dry_run = !args.iter().any(|arg| arg == "--yes" || arg == "-y");
-    let purge = args.iter().any(|arg| arg == "--purge");
-    let keep_app = args.iter().any(|arg| arg == "--keep-app");
+pub fn run(args: UninstallArgs) -> ExitCode {
+    let dry_run = !args.yes;
+    let purge = args.purge;
+    let keep_app = args.keep_app;
 
     let mut entries = vec![
         Entry {
@@ -72,7 +77,7 @@ pub fn run(args: &[String]) -> ExitCode {
         },
         Entry {
             label: "espanso 降级触发定义",
-            path: crate::espanso::paths::match_dir().join("snipshot.yml"),
+            path: crate::espanso::paths::match_file(),
             kind: Kind::File,
         },
         Entry {

@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::config::{self, Config};
@@ -38,43 +39,57 @@ const FIELDS: &[(&str, &str)] = &[
     ("allow_paste_fallback", "match exec 失败时用剪贴板粘贴兜底"),
 ];
 
-const USAGE: &str = "\
-用法:
-  snipshot config                显示当前配置
-  snipshot config path           打印配置文件路径
-  snipshot config get <key>      读取单个键
-  snipshot config set <key> <v>  修改单个键（自动校验，必要时重启 daemon）
-  snipshot config unset <key>    恢复某个键的默认值
-  snipshot config reset          全部恢复默认
-  snipshot config keys           列出所有键与含义
-  snipshot config edit           用 $EDITOR 打开配置文件";
+#[derive(Debug, Subcommand)]
+pub enum ConfigCmd {
+    /// 显示当前配置（默认动作）
+    Show,
+    /// 打印配置文件路径
+    Path,
+    /// 读取单个键
+    Get {
+        /// 键名，`snipshot config keys` 查看全部
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+    /// 修改单个键（自动校验，必要时重启 daemon）
+    Set {
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// 取值；带空格时可以不加引号，多段会被拼起来
+        #[arg(value_name = "VALUE", required = true, num_args = 1..)]
+        value: Vec<String>,
+    },
+    /// 恢复某个键的默认值
+    Unset {
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+    /// 全部恢复默认
+    Reset,
+    /// 列出所有键与含义
+    Keys,
+    /// 用 $EDITOR 打开配置文件
+    Edit,
+}
 
-pub fn run(args: &[String]) -> ExitCode {
-    match args.first().map(String::as_str) {
-        None | Some("show") => show(),
-        Some("path") => {
+pub fn run(cmd: Option<ConfigCmd>) -> ExitCode {
+    match cmd.unwrap_or(ConfigCmd::Show) {
+        ConfigCmd::Show => show(),
+        ConfigCmd::Path => {
             println!("{}", config::config_path().display());
             ExitCode::SUCCESS
         }
-        Some("get") => get(args.get(1).map(String::as_str)),
-        Some("set") => set(args.get(1).map(String::as_str), &args[2..]),
-        Some("unset") => unset(args.get(1).map(String::as_str)),
-        Some("reset") => reset(),
-        Some("keys") => {
+        ConfigCmd::Get { key } => get(&key),
+        ConfigCmd::Set { key, value } => set(&key, &value),
+        ConfigCmd::Unset { key } => unset(&key),
+        ConfigCmd::Reset => reset(),
+        ConfigCmd::Keys => {
             for (key, hint) in FIELDS {
                 println!("  {key:<22} {hint}");
             }
             ExitCode::SUCCESS
         }
-        Some("edit") => edit(),
-        Some("-h") | Some("--help") | Some("help") => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
-        }
-        Some(other) => {
-            eprintln!("未知的 config 子命令：{other}\n\n{USAGE}");
-            ExitCode::FAILURE
-        }
+        ConfigCmd::Edit => edit(),
     }
 }
 
@@ -138,10 +153,7 @@ fn show() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn get(key: Option<&str>) -> ExitCode {
-    let Some(key) = key else {
-        return fail("需要一个键名，`snipshot config keys` 查看全部");
-    };
+fn get(key: &str) -> ExitCode {
     if let Err(err) = known_key(key) {
         return fail(&err);
     }
@@ -150,10 +162,7 @@ fn get(key: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn set(key: Option<&str>, rest: &[String]) -> ExitCode {
-    let Some(key) = key else {
-        return fail("用法：snipshot config set <key> <value>");
-    };
+fn set(key: &str, rest: &[String]) -> ExitCode {
     if let Err(err) = known_key(key) {
         return fail(&err);
     }
@@ -162,7 +171,7 @@ fn set(key: Option<&str>, rest: &[String]) -> ExitCode {
             "`{key}` 缺少取值，`snipshot config keys` 查看含义"
         ));
     }
-    // 允许 `set trigger ";;"` 这种带空格的写法，所以把剩下的都拼起来。
+    // 允许 `set trigger ,,` 与 `set trigger " "` 两种写法，所以把剩下的都拼起来。
     let raw = rest.join(" ");
 
     let value = match coerce(key, &raw).and_then(|value| validate(key, value)) {
@@ -189,10 +198,7 @@ fn set(key: Option<&str>, rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn unset(key: Option<&str>) -> ExitCode {
-    let Some(key) = key else {
-        return fail("用法：snipshot config unset <key>");
-    };
+fn unset(key: &str) -> ExitCode {
     if let Err(err) = known_key(key) {
         return fail(&err);
     }
@@ -372,6 +378,7 @@ fn write_file(value: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn coercion_follows_default_type() {
@@ -414,5 +421,36 @@ mod tests {
             FIELDS.len(),
             "Config 新增了字段但 FIELDS 没跟上"
         );
+    }
+
+    #[test]
+    fn clap_accepts_the_documented_forms() {
+        #[derive(clap::Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            action: Option<ConfigCmd>,
+        }
+
+        let parse = |args: &[&str]| {
+            let mut full = vec!["config"];
+            full.extend_from_slice(args);
+            Wrapper::try_parse_from(full).map(|w| w.action)
+        };
+
+        assert!(parse(&[]).unwrap().is_none());
+        assert!(matches!(parse(&["show"]).unwrap(), Some(ConfigCmd::Show)));
+        // 带空格的取值不加引号也能拼起来
+        match parse(&["set", "trigger", "a", "b"]).unwrap() {
+            Some(ConfigCmd::Set { key, value }) => {
+                assert_eq!(key, "trigger");
+                assert_eq!(value.join(" "), "a b");
+            }
+            other => panic!("解析成了 {other:?}"),
+        }
+        // 少了取值就该被 clap 挡住，而不是写进一个空串
+        assert!(parse(&["set", "trigger"]).is_err());
+        assert!(parse(&["get"]).is_err());
+        // 帮助页能生成，说明子命令树自洽
+        Wrapper::command().debug_assert();
     }
 }

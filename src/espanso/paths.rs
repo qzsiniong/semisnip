@@ -63,6 +63,16 @@ pub fn match_dir() -> PathBuf {
     config_root().join("match")
 }
 
+/// snipshot 自己写进 espanso 的那一个 match 文件。
+///
+/// 只有这一个文件归 snipshot 管：同目录下的其它 YAML 是用户的片段，
+/// 任何命令都不许碰。
+pub fn match_file() -> PathBuf {
+    match_dir().join(MATCH_FILE)
+}
+
+pub const MATCH_FILE: &str = "snipshot.yml";
+
 /// espanso 的运行时目录（socket 在那里）。
 pub fn runtime_dir() -> PathBuf {
     if let Ok(out) = std::process::Command::new(super::cli::EspansoCli::discover().bin())

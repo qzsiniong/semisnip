@@ -1,15 +1,22 @@
-//! 子命令入口。
+//! 子命令入口（clap）。
 //!
 //! 只有 `daemon` 会初始化 gpui；其余子命令必须是"秒退、不打印 stdout"的
 //! 轻量进程——`trigger` 会被 espanso 的 shell 变量同步调用。
+//!
+//! 不带子命令时**只打印帮助**，不再默默起 daemon：一个会常驻、会抢键盘的
+//! 进程不该是 `snipshot` 的默认动作。daemon 由 LaunchAgent 负责拉起。
 
+mod completion;
 mod config_cmd;
 mod log_cmd;
+mod match_cmd;
 mod uninstall;
 
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
+
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::config::{self, Config};
 use crate::espanso::cli::EspansoCli;
@@ -17,88 +24,172 @@ use crate::espanso::paths;
 use crate::index::loader::{SnippetSource, YamlSource};
 use crate::ipc::{client, proto::Origin};
 
-const USAGE: &str = "\
-snipshot — espanso 的片段检索层
-
-用法:
-  snipshot                       启动 daemon（默认）
-  snipshot daemon                同上
-  snipshot trigger [--origin O]  请求打开面板（espanso 的 shell 变量会调它）
-  snipshot reload                重建索引
-  snipshot install               写入 espanso 触发定义并给出后续步骤
-  snipshot uninstall [--yes]     卸载：演练删什么，--yes 真删，--purge 连配置一起
-  snipshot config [子命令]        查看/修改配置（path get set unset reset keys edit）
-  snipshot log [选项]            看日志（-n 行数  -f 跟随  --grep 关键词  --level 级别）
+#[derive(Debug, Parser)]
+#[command(
+    name = "snipshot",
+    version,
+    about = "espanso 的片段检索层：非激活面板负责选，espanso 负责展",
+    subcommand_required = true,
+    arg_required_else_help = true,
+    max_term_width = 92,
+    after_help = "常用：
+  snipshot install               接入 espanso（写入降级触发的 match 定义）
+  snipshot match edit            看/改写进 espanso 的 snipshot.yml（退出时校验）
+  snipshot completion            给当前 shell 装上补全（再也不用记子命令）
   snipshot doctor                体检：espanso / 权限 / 索引 / daemon
-  snipshot type <text>           调试：合成字符输入
-  snipshot key <esc|enter|up|down>  调试：合成命名按键
+  snipshot config set trigger ,, 把触发串改成 `,,`
+  snipshot log -n 100 -g 触发     回看最近的日志"
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-子命令的详细用法：snipshot <子命令> --help
-";
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// 启动 daemon：常驻进程，负责 IPC、键盘 tap 与面板
+    Daemon,
+    /// 请求打开片段面板（espanso 的 shell 变量会同步调用它）
+    Trigger {
+        /// 谁唤起的；只影响日志与降级判断
+        #[arg(long, value_enum, default_value_t = OriginArg::Manual, value_name = "KIND")]
+        origin: OriginArg,
+    },
+    /// 重建片段索引（daemon 会顺带重新读一遍 YAML）
+    Reload,
+    /// 接入 espanso：写入触发定义，并给出后续步骤
+    Install,
+    /// 查看/编辑写进 espanso 的 snipshot.yml
+    #[command(alias = "yml")]
+    Match {
+        #[command(subcommand)]
+        action: Option<match_cmd::MatchCmd>,
+    },
+    /// 卸载 snipshot 自己装进去的东西
+    Uninstall(uninstall::UninstallArgs),
+    /// 查看与修改配置
+    Config {
+        #[command(subcommand)]
+        action: Option<config_cmd::ConfigCmd>,
+    },
+    /// 查看 daemon 日志
+    Log(log_cmd::LogArgs),
+    /// 生成或安装 shell 补全
+    Completion(completion::CompletionArgs),
+    /// 体检：espanso / 权限 / 索引 / daemon
+    Doctor,
+    /// 调试：合成字符输入
+    #[command(hide = true)]
+    Type {
+        /// 要键入的文本（多个参数会用空格拼接）
+        #[arg(value_name = "TEXT", num_args = 0.., trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// 调试：合成命名按键
+    #[command(hide = true)]
+    Key {
+        /// esc / enter / up / down 等
+        #[arg(value_name = "KEY", required = true)]
+        keys: Vec<String>,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum OriginArg {
+    /// 键盘 tap 命中（正常路径）
+    Tap,
+    /// espanso 的 shell 变量唤醒（无辅助功能权限时的降级路径）
+    #[value(name = "espanso", alias = "espanso-shell", alias = "espanso_shell")]
+    Espanso,
+    /// 手动在终端执行
+    #[default]
+    Manual,
+}
+
+impl From<OriginArg> for Origin {
+    fn from(value: OriginArg) -> Self {
+        match value {
+            OriginArg::Tap => Origin::Tap,
+            OriginArg::Espanso => Origin::EspansoShell,
+            OriginArg::Manual => Origin::Manual,
+        }
+    }
+}
 
 pub fn run() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let command = args.first().map(String::as_str).unwrap_or("daemon");
-
-    match command {
-        "daemon" | "" => {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => return report(err),
+    };
+    // 只有 daemon 会进 gpui 事件循环，所以它必须最后一步再分派。
+    match cli.command {
+        Command::Daemon => {
             crate::run_daemon();
             ExitCode::SUCCESS
         }
-        "trigger" => trigger(&args[1..]),
-        "reload" => match client::reload() {
+        Command::Trigger { origin } => trigger(origin.into()),
+        Command::Reload => match client::reload() {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => fail(&format!("reload 失败：{err}")),
         },
+        Command::Install => install(),
+        Command::Match { action } => match_cmd::run(action),
+        Command::Uninstall(args) => uninstall::run(args),
+        Command::Config { action } => config_cmd::run(action),
+        Command::Log(args) => log_cmd::run(args),
+        Command::Completion(args) => completion::run(args),
+        Command::Doctor => doctor(),
         // 调试用：合成按键（从 CLI 进程发出，source pid 与 daemon 不同，
         // 因此 tap 会当作真实输入）。没有辅助功能权限时也能冒烟测交互。
-        "type" => {
-            crate::handoff::inject::type_text(&args[1..].join(" "));
+        Command::Type { text } => {
+            crate::handoff::inject::type_text(&text.join(" "));
             ExitCode::SUCCESS
         }
-        "key" => {
-            for name in &args[1..] {
+        Command::Key { keys } => {
+            for name in &keys {
                 crate::handoff::inject::press_named(name);
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             ExitCode::SUCCESS
         }
-        "install" => install(),
-        "uninstall" => uninstall::run(&args[1..]),
-        "config" => config_cmd::run(&args[1..]),
-        "log" => log_cmd::run(&args[1..]),
-        "doctor" => doctor(),
-        "-h" | "--help" | "help" => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
-        }
-        "--version" | "version" => {
-            println!("snipshot {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        other => {
-            eprintln!("未知子命令：{other}\n\n{USAGE}");
-            ExitCode::FAILURE
-        }
     }
 }
 
-fn fail(message: &str) -> ExitCode {
+/// 把 clap 的错误转成退出码。
+///
+/// 关键区分：`snipshot`（无参数）走的是 `DisplayHelpOnMissingArgumentOrSubcommand`，
+/// 那是"想看看怎么用"，不是错误，退出码必须是 0。
+fn report(err: clap::Error) -> ExitCode {
+    let code = classify(err.kind());
+    // clap 自己决定走 stdout 还是 stderr（help → stdout，用法错误 → stderr）。
+    let _ = err.print();
+    code
+}
+
+fn classify(kind: clap::error::ErrorKind) -> ExitCode {
+    use clap::error::ErrorKind;
+
+    match kind {
+        // `snipshot`（无参数）会落到第二项：那是"想看看怎么用"，不是错误。
+        ErrorKind::DisplayHelp
+        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        | ErrorKind::DisplayVersion => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    }
+}
+
+pub(crate) fn fail(message: &str) -> ExitCode {
     eprintln!("snipshot: {message}");
     ExitCode::FAILURE
 }
 
-fn trigger(args: &[String]) -> ExitCode {
-    let origin = match args {
-        [] => Origin::Manual,
-        [flag, value] if flag == "--origin" => match value.as_str() {
-            "espanso" | "espanso_shell" => Origin::EspansoShell,
-            "tap" => Origin::Tap,
-            _ => Origin::Manual,
-        },
-        _ => Origin::Manual,
-    };
+/// 供 `completion` 生成补全脚本时复用同一份命令定义。
+pub(crate) fn command() -> clap::Command {
+    Cli::command()
+}
 
+fn trigger(origin: Origin) -> ExitCode {
     match client::open(origin, ";;") {
         // 关键：成功时绝不能往 stdout 写任何东西——espanso 会把 stdout
         // 当作展开内容注入，多一个字节就会污染用户文档。
@@ -112,32 +203,16 @@ fn install() -> ExitCode {
     let config = Config::load();
     let _ = config.save();
 
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(err) => return fail(&format!("无法定位自身路径：{err}")),
+    let target = match write_match_file() {
+        Ok(target) => target,
+        Err(err) => return fail(&format!("{err}")),
     };
-
-    let match_dir = paths::match_dir();
-    if let Err(err) = std::fs::create_dir_all(&match_dir) {
-        return fail(&format!("创建 {} 失败：{err}", match_dir.display()));
-    }
-
-    let target = match_dir.join("snipshot.yml");
-    if target.exists() {
-        let backup = match_dir.join("snipshot.yml.bak");
-        if let Err(err) = std::fs::copy(&target, &backup) {
-            return fail(&format!("备份已有 snipshot.yml 失败：{err}"));
-        }
-        println!("已备份原文件到 {}", backup.display());
-    }
-
-    let body = render_match_file(&exe.display().to_string(), &config.trigger);
-    if let Err(err) = std::fs::write(&target, body) {
-        return fail(&format!("写入 {} 失败：{err}", target.display()));
-    }
-
     println!("已写入 {}", target.display());
     println!();
+
+    let exe = std::env::current_exe()
+        .map(|exe| exe.display().to_string())
+        .unwrap_or_else(|_| "<snipshot>".into());
     println!("下一步：");
     println!("  1. espanso restart        （让新 match 生效）");
     println!("  2. 把 Snipshot.app 加进「系统设置 → 隐私与安全性 → 辅助功能」");
@@ -150,9 +225,42 @@ fn install() -> ExitCode {
     if !std::path::Path::new("/usr/local/bin/snipshot").exists() {
         println!();
         println!("提示：`snipshot` 还不在 PATH 上，补一条软链后命令才可用：");
-        println!("  sudo ln -sf {} /usr/local/bin/snipshot", exe.display());
+        println!("  sudo ln -sf {exe} /usr/local/bin/snipshot");
     }
     ExitCode::SUCCESS
+}
+
+/// 把 match 定义写进 espanso 的 match 目录，已存在则先备份。
+///
+/// `install` 和 `snipshot match regenerate` 走同一条路径：两边各写一份迟早
+/// 会写到不一致，而这份文件错了的表现是「`;;` 时好时坏」，极难查。
+pub(crate) fn write_match_file() -> anyhow::Result<std::path::PathBuf> {
+    // current_exe 返回的是 argv[0] 那条路径，可能只是 /usr/local/bin 的软链。
+    // 写进 yml 的必须是真身：软链哪天被删，降级触发就会静默失效（espanso 只
+    // 记日志，用户什么也看不到）。
+    let exe = resolve_exe(std::env::current_exe()?);
+    let trigger = Config::load().trigger;
+
+    let match_dir = paths::match_dir();
+    std::fs::create_dir_all(&match_dir)?;
+
+    let target = paths::match_file();
+    if target.exists() {
+        let backup = match_dir.join(format!("{}.bak", paths::MATCH_FILE));
+        std::fs::copy(&target, &backup)?;
+        println!("已备份原文件到 {}", backup.display());
+    }
+
+    std::fs::write(
+        &target,
+        render_match_file(&exe.display().to_string(), &trigger),
+    )?;
+    Ok(target)
+}
+
+/// 把 exe 路径上的软链解开；解不开就原样返回（比如二进制刚被删掉）。
+fn resolve_exe(exe: std::path::PathBuf) -> std::path::PathBuf {
+    exe.canonicalize().unwrap_or(exe)
 }
 
 /// 生成降级路径的 match 定义：tap 不可用时由 espanso 唤醒 snipshot。
@@ -165,6 +273,7 @@ pub fn render_match_file(exe: &str, trigger: &str) -> String {
 # 已被 snipshot 吞掉，espanso 根本看不到这个 trigger，本文件不会生效。
 #
 # 注意：shell 变量的 stdout 会被原样注入文档，所以命令必须保持静默。
+# yaml-language-server: $schema=https://raw.githubusercontent.com/espanso/espanso/dev/schemas/match.schema.json
 matches:
   - trigger: "{trigger}"
     replace: "{{{{output}}}}"
@@ -344,5 +453,76 @@ mod tests {
         // 能被 espanso 的 match schema 解析成合法 YAML
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
         assert!(parsed.get("matches").is_some());
+    }
+
+    #[test]
+    fn bare_invocation_asks_for_help_instead_of_daemon() {
+        // 默认动作必须是"解释自己"，而不是偷偷起一个常驻进程。
+        let err = Cli::try_parse_from(["snipshot"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        assert_eq!(classify(err.kind()), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn help_and_version_are_success() {
+        for args in [["snipshot", "--help"], ["snipshot", "--version"]] {
+            let err = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(classify(err.kind()), ExitCode::SUCCESS, "{args:?}");
+        }
+        let err = Cli::try_parse_from(["snipshot", "nope"]).unwrap_err();
+        assert_eq!(classify(err.kind()), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn trigger_defaults_to_manual_and_accepts_both_spellings() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec!["snipshot", "trigger"];
+            args.extend_from_slice(extra);
+            match Cli::try_parse_from(args).unwrap().command {
+                Command::Trigger { origin } => origin,
+                other => panic!("解析成了 {other:?}"),
+            }
+        };
+        assert_eq!(parse(&[]), OriginArg::Manual);
+        assert_eq!(parse(&["--origin", "espanso"]), OriginArg::Espanso);
+        // 老脚本里写的是下划线版本，必须继续可用
+        assert_eq!(parse(&["--origin", "espanso_shell"]), OriginArg::Espanso);
+        assert_eq!(parse(&["--origin", "tap"]), OriginArg::Tap);
+    }
+
+    #[test]
+    fn command_tree_is_usable_by_completion_generator() {
+        // clap_complete 要求定义自洽（名字唯一、没有必填冲突），这里提前暴露
+        command().debug_assert();
+    }
+
+    #[test]
+    fn symlinked_exe_resolves_to_the_real_binary() {
+        // 从 /usr/local/bin/snipshot（软链）运行时，写进 yml 的必须是 .app 里的
+        // 真身，否则删掉软链降级触发就悄悄失效了。
+        let dir = std::env::temp_dir().join("snipshot-resolve-exe");
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("real-bin");
+        std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+
+        let link = dir.join("link-bin");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            resolve_exe(link.clone()),
+            real.canonicalize().unwrap(),
+            "软链要解到真身"
+        );
+        // 不存在的路径原样返回，不 panic
+        let ghost = dir.join("ghost");
+        assert_eq!(resolve_exe(ghost.clone()), ghost);
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&real);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

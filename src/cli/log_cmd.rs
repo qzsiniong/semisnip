@@ -8,56 +8,62 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use clap::{Args, Subcommand, ValueEnum};
+
 use crate::config;
 
 const DEFAULT_LINES: usize = 40;
 /// 一次最多回看 1 MiB：日志滚很久也不会把内存吃穿。
 const MAX_TAIL_BYTES: u64 = 1024 * 1024;
 
-const USAGE: &str = "\
-用法:
-  snipshot log                 最近 40 行
-  snipshot log -n 200          最近 200 行
-  snipshot log -f              持续跟随（Ctrl-C 退出）
-  snipshot log --grep 触发      只保留包含该串的行
-  snipshot log --level warn    只保留 warn 及以上（info/warn/error）
-  snipshot log path            打印日志路径
-  snipshot log clear           清空日志";
-
-#[derive(Debug, Default)]
-struct Options {
+#[derive(Debug, Args)]
+pub struct LogArgs {
+    /// 显示最近 N 行（默认 40）
+    #[arg(short = 'n', long, value_name = "N")]
     lines: Option<usize>,
+
+    /// 持续跟随新写入的行（Ctrl-C 退出）
+    #[arg(short, long)]
     follow: bool,
+
+    /// 只保留包含该串的行
+    #[arg(short = 'g', long, value_name = "PATTERN")]
     grep: Option<String>,
+
+    /// 只保留该级别及以上的行
+    #[arg(
+        short = 'l',
+        long,
+        value_enum,
+        ignore_case = true,
+        value_name = "LEVEL"
+    )]
     level: Option<Level>,
-    action: Action,
+
+    #[command(subcommand)]
+    action: Option<LogAction>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-enum Action {
-    #[default]
-    Tail,
+#[derive(Debug, Subcommand)]
+pub enum LogAction {
+    /// 打印日志文件路径
     Path,
+    /// 清空日志
     Clear,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
+/// 过滤用的级别。`--level info` 就是"什么都看"，所以 DEBUG/TRACE 也归到 Info。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum Level {
+    #[value(name = "info", alias = "debug", alias = "trace")]
     Info,
+    #[value(name = "warn", alias = "warning")]
     Warn,
+    #[value(name = "error", alias = "err")]
     Error,
 }
 
 impl Level {
-    fn parse(text: &str) -> Option<Self> {
-        match text.to_ascii_lowercase().as_str() {
-            "info" | "debug" | "trace" => Some(Self::Info),
-            "warn" | "warning" => Some(Self::Warn),
-            "error" | "err" => Some(Self::Error),
-            _ => None,
-        }
-    }
-
     fn of_line(line: &str) -> Option<Self> {
         // env_logger 默认格式：`[2026-11-07T08:30:34Z INFO  target] msg`
         let start = line.find('[')? + 1;
@@ -73,24 +79,32 @@ impl Level {
     }
 }
 
-pub fn run(args: &[String]) -> ExitCode {
-    let options = match parse(args) {
-        Ok(options) => options,
-        Err(err) => {
-            eprintln!("snipshot log: {err}\n\n{USAGE}");
-            return ExitCode::FAILURE;
-        }
-    };
+#[derive(Debug)]
+struct Options {
+    lines: usize,
+    follow: bool,
+    grep: Option<String>,
+    level: Option<Level>,
+}
 
+pub fn run(args: LogArgs) -> ExitCode {
     let path = config::log_path();
-    match options.action {
-        Action::Path => {
+    match args.action {
+        Some(LogAction::Path) => {
             println!("{}", path.display());
             return ExitCode::SUCCESS;
         }
-        Action::Clear => return clear(&path),
-        Action::Tail => {}
+        Some(LogAction::Clear) => return clear(&path),
+        None => {}
     }
+
+    // 过滤对 path/clear 没意义，其余参数原样生效。
+    let options = Options {
+        lines: args.lines.unwrap_or(DEFAULT_LINES),
+        follow: args.follow,
+        grep: args.grep,
+        level: args.level,
+    };
 
     if !path.exists() {
         println!("{}（还没有日志：daemon 未启动过？）", path.display());
@@ -109,8 +123,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    let take = options.lines.unwrap_or(DEFAULT_LINES);
-    let skip = lines.len().saturating_sub(take);
+    let skip = lines.len().saturating_sub(options.lines);
     for line in &lines[skip..] {
         println!("{line}");
     }
@@ -119,56 +132,6 @@ pub fn run(args: &[String]) -> ExitCode {
         follow(&path, &options);
     }
     ExitCode::SUCCESS
-}
-
-fn parse(args: &[String]) -> Result<Options, String> {
-    let mut options = Options::default();
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        match arg {
-            "-f" | "--follow" => options.follow = true,
-            "path" => options.action = Action::Path,
-            "clear" => options.action = Action::Clear,
-            "-n" | "--lines" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "-n 后面需要行数".to_string())?;
-                options.lines = Some(value.parse().map_err(|_| format!("`{value}` 不是行数"))?);
-                index += 1;
-            }
-            "-g" | "--grep" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--grep 后面需要关键词".to_string())?;
-                options.grep = Some(value.clone());
-                index += 1;
-            }
-            "-l" | "--level" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "--level 后面需要级别".to_string())?;
-                options.level =
-                    Some(Level::parse(value).ok_or_else(|| format!("未知级别 `{value}`"))?);
-                index += 1;
-            }
-            "-h" | "--help" => return Err(USAGE.to_string()),
-            other => {
-                // 裸数字当作 `-n`
-                if let Ok(n) = other.parse::<usize>() {
-                    options.lines = Some(n);
-                } else {
-                    return Err(format!("无法理解的参数 `{other}`"));
-                }
-            }
-        }
-        index += 1;
-    }
-    if options.level.is_some() && options.action != Action::Tail {
-        // 过滤对 path/clear 没意义，直接忽略即可，不必报错
-        options.level = None;
-    }
-    Ok(options)
 }
 
 fn keep(line: &str, options: &Options) -> bool {
@@ -274,37 +237,66 @@ fn clear(path: &Path) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{Parser, Subcommand};
+
+    /// 真 CLI 里 `log` 是子命令，测试也走同一条路径，避免用 flatten 造出
+    /// 一个和线上不一样的命令树。
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: Cmd,
+    }
+
+    #[derive(Subcommand)]
+    enum Cmd {
+        Log(LogArgs),
+    }
+
+    fn parse(args: &[&str]) -> LogArgs {
+        let mut full = vec!["snipshot", "log"];
+        full.extend_from_slice(args);
+        match Wrapper::try_parse_from(full).unwrap().cmd {
+            Cmd::Log(log) => log,
+        }
+    }
 
     fn opts(grep: Option<&str>, level: Option<Level>) -> Options {
         Options {
+            lines: DEFAULT_LINES,
+            follow: false,
             grep: grep.map(str::to_string),
             level,
-            ..Options::default()
         }
     }
 
     #[test]
     fn parses_common_flags() {
-        let args: Vec<String> = ["-n", "5", "-f", "--grep", "触发"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let options = parse(&args).unwrap();
-        assert_eq!(options.lines, Some(5));
-        assert!(options.follow);
-        assert_eq!(options.grep.as_deref(), Some("触发"));
+        let log = parse(&["-n", "5", "-f", "--grep", "触发", "--level", "warn"]);
+        assert_eq!(log.lines, Some(5));
+        assert!(log.follow);
+        assert_eq!(log.grep.as_deref(), Some("触发"));
+        assert_eq!(log.level, Some(Level::Warn));
+        assert!(log.action.is_none());
     }
 
     #[test]
-    fn bare_number_means_lines() {
-        let args = vec!["120".to_string()];
-        assert_eq!(parse(&args).unwrap().lines, Some(120));
+    fn actions_are_subcommands() {
+        assert!(matches!(parse(&["path"]).action, Some(LogAction::Path)));
+        assert!(matches!(parse(&["clear"]).action, Some(LogAction::Clear)));
+        assert!(Wrapper::try_parse_from(["snipshot", "log", "--whatever"]).is_err());
+        assert!(
+            Wrapper::try_parse_from(["snipshot", "log", "--level", "fatal"]).is_err(),
+            "瞎写的级别该被挡住"
+        );
     }
 
     #[test]
-    fn rejects_unknown_flag() {
-        let args = vec!["--whatever".to_string()];
-        assert!(parse(&args).is_err());
+    fn level_accepts_legacy_spellings() {
+        let level = |text: &str| parse(&["--level", text]).level;
+        assert_eq!(level("info"), Some(Level::Info));
+        assert_eq!(level("trace"), Some(Level::Info));
+        assert_eq!(level("warning"), Some(Level::Warn));
+        assert_eq!(level("ERROR"), Some(Level::Error));
     }
 
     #[test]

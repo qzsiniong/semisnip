@@ -1,6 +1,6 @@
 //! daemon ↔ CLI 的线协议：NDJSON，一行一个 JSON，双向都带版本号。
 //!
-//! 约定（见 packaging/espanso/snipshot.yml）：
+//! 约定（源文件是 `cli::render_match_file`，随时可用 `snipshot match show` 查看）：
 //! - `snipshot trigger` 成功时 **stdout 必须为空**——espanso 会把 stdout
 //!   当作展开内容注入，多打印一个字节就会污染用户文档。
 //! - 所以这里所有错误都走 stderr，响应只用于 CLI 判断成败。

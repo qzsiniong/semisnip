@@ -73,6 +73,12 @@ if [[ "${1:-}" == "--install" ]]; then
   echo "==> 写入 espanso 触发定义"
   "/Applications/$APP_NAME.app/Contents/MacOS/$BIN_NAME" install
 
+  # 补全：子命令十来个，装一次省得记。失败不算安装失败，用户随时可以重跑。
+  if [[ -e "/usr/local/bin/$BIN_NAME" ]]; then
+    echo "==> 安装 shell 补全"
+    "/usr/local/bin/$BIN_NAME" completion install || echo "    （跳过：稍后可手动执行 snipshot completion）"
+  fi
+
   cat <<'TIP'
 
 接下来手动做两件事（系统不允许脚本代劳）：
