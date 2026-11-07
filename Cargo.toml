@@ -1,0 +1,37 @@
+[package]
+name = "snipshot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "espanso 的片段检索层：非激活面板负责选，espanso 负责展"
+license = "MIT"
+
+[lib]
+name = "snipshot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "snipshot"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.7.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+arc-swap = "1"
+notify = "8"
+pinyin = "0.10"
+chrono = "0.4"
+log = "0.4"
+env_logger = "0.11"
+dirs = "5"
+anyhow = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+
+[profile.release]
+opt-level = 2
+strip = true

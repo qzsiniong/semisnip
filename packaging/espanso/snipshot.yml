@@ -1,0 +1,18 @@
+# 由 `snipshot install` 生成到 $CONFIG/match/snipshot.yml，此处仅作版本对照。
+#
+# 作用：当 snipshot 的键盘 tap 不可用（缺辅助功能权限）时，
+# 由 espanso 的 shell 扩展唤醒面板。tap 正常工作时，`;;` 的最后一个键
+# 已被 snipshot 吞掉，espanso 根本看不到这个 trigger，本文件不会生效。
+#
+# 约定：shell 变量的 stdout 会被原样注入文档，所以命令必须保持静默。
+matches:
+  - trigger: ";;"
+    replace: "{{output}}"
+    label: "snipshot · 打开片段面板（降级触发）"
+    vars:
+      - name: output
+        type: shell
+        params:
+          cmd: "'/Applications/Snipshot.app/Contents/MacOS/snipshot' trigger --origin espanso 2>>/dev/null"
+          shell: sh
+          trim: true
