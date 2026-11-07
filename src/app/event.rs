@@ -6,8 +6,13 @@ use gpui_kit::{App, Global};
 
 use crate::ipc::proto::Origin;
 
+/// 一次按键的完整描述（由 tap 线程解析后投递过来）。
+///
+/// 之所以连修饰键一起带过来而不是只给字符：面板需要判断"这是不是系统快捷键"，
+/// 而那个判断必须看原始修饰键——`Cmd+V` 与 `v` 是同一个键码。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyMsg {
+    /// macOS 虚拟键码（见 `trigger::keymap`）。
     pub code: u32,
     pub shift: bool,
     pub alt: bool,
@@ -22,14 +27,15 @@ impl KeyMsg {
     }
 }
 
+/// 跨线程消息。**所有**对 UI 状态的修改都由这些消息驱动，
+/// 没有任何线程会绕过事件通道直接改 `AppState`。
 #[derive(Clone, Debug)]
 pub enum Event {
     /// 打开面板。`erase` 是被自己吞掉、需要回删的字符数。
-    Open {
-        origin: Origin,
-        erase: usize,
-    },
+    Open { origin: Origin, erase: usize },
+    /// 面板里的一次按键。只由 tap 线程产生。
     Key(KeyMsg),
+    /// 收起面板（Esc、关闭按钮、菜单项都汇聚到这里）。
     Cancel,
     /// 索引快照更新，重新计算候选。
     IndexUpdated,
@@ -42,7 +48,11 @@ pub enum Event {
     /// 由 scheduler 在 UI 线程里换掉那份拷贝——顺带处理触发键换键码这类
     /// 必须通知 tap 线程的副作用。
     ConfigChanged,
+    /// 键盘 tap 装不上（原因见字符串），面板要切到授权引导页。
+    ///
+    /// 与 `ConfigChanged` 一样来自"别的线程"：看门狗线程检测到切换时投递。
     TapUnavailable(String),
+    /// 退出进程。先关面板再退，避免 launchd 看到"异常退出"而立刻重启。
     Shutdown,
 }
 

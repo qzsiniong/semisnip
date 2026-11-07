@@ -68,22 +68,28 @@ pub fn cache_dir() -> PathBuf {
         .join(APP_DIR)
 }
 
+/// `config.yml` 的完整路径。
 pub fn config_path() -> PathBuf {
     config_dir().join(CONFIG_FILE)
 }
 
+/// 随配置一起落盘的 JSON Schema 路径（给编辑器补全用）。
 pub fn schema_path() -> PathBuf {
     config_dir().join(SCHEMA_FILE)
 }
 
+/// 使用频率统计文件。放在配置目录而不是缓存目录：删掉它排序就"失忆"了，
+/// 但它确实是用户数据（记录了使用习惯），不该被系统清理工具顺手删掉。
 pub fn usage_path() -> PathBuf {
     config_dir().join(USAGE_FILE)
 }
 
+/// daemon 日志文件。放配置目录的理由同上：崩溃现场要留得住。
 pub fn log_path() -> PathBuf {
     config_dir().join(LOG_FILE)
 }
 
+/// shell 补全脚本的存放目录（`completion install` 写这里）。
 pub fn completions_dir() -> PathBuf {
     config_dir().join("completions")
 }
@@ -179,6 +185,7 @@ fn espanso_root_fallback() -> PathBuf {
         .join("espanso")
 }
 
+/// espanso 存放 match 定义的目录（`<root>/match`）。
 pub fn espanso_match_dir() -> PathBuf {
     espanso_root().join("match")
 }
@@ -214,6 +221,8 @@ pub fn espanso_runtime_dir() -> PathBuf {
         .join("espanso")
 }
 
+/// espanso worker 的 socket。当前没有用到，保留作为将来"直接与 worker 通信"
+/// （而不是每次 `match exec` 起一个进程）的入口；文件名是 espanso 2.4 的实际值。
 pub fn espanso_worker_socket() -> PathBuf {
     espanso_runtime_dir().join("espansoworkerv2.sock")
 }

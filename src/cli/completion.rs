@@ -21,6 +21,7 @@ const BIN: &str = crate::paths::BIN_NAME;
 const BEGIN: &str = "# >>> semisnip completion >>>";
 const END: &str = "# <<< semisnip completion <<<";
 
+/// `completion` 的参数。`SHELL` 位置参数与子命令互斥（见 [`run`]）。
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct CompletionArgs {
@@ -36,6 +37,7 @@ pub struct CompletionArgs {
     action: Option<CompletionAction>,
 }
 
+/// 补全的安装 / 卸载。两个动作对称，都支持 `--dry-run`。
 #[derive(Debug, Subcommand)]
 pub enum CompletionAction {
     /// 写补全脚本并接进 shell 启动文件（不带子命令时的默认动作）
@@ -58,6 +60,15 @@ pub enum CompletionAction {
     },
 }
 
+/// 分派 `completion`。
+///
+/// 五个分支对应五种真实用法，注意"位置参数"和"子命令"是**互斥**的
+/// （`args_conflicts_with_subcommands`）：`completion zsh` 打印脚本，
+/// `completion install` 落盘安装，两个都给就报错——让人猜"到底哪个优先"
+/// 不如直接拒绝。
+///
+/// `install` / `uninstall` 的 `dry_run` 取两者的或：顶层和子命令各有一个
+/// `--dry-run`，写在哪一边都该生效。
 pub fn run(args: CompletionArgs) -> ExitCode {
     match (args.shell, args.action) {
         // `semisnip completion zsh` → 打印脚本

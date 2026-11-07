@@ -13,6 +13,7 @@ use clap::Args;
 
 use crate::paths;
 
+/// `uninstall` 的参数。默认演练是刻意的：这是唯一不可逆的命令。
 #[derive(Debug, Args)]
 pub struct UninstallArgs {
     /// 真正执行（不加时只演练，列出将要删除的内容）
@@ -60,6 +61,16 @@ impl Entry {
     }
 }
 
+/// 分派卸载：默认只演练，`--yes` 才真删。
+///
+/// 两个顺序约束，改的时候别调换：
+/// - **停 daemon 在删 app 之前**：LaunchAgent 的 `ProgramArguments` 指向 app 内部的
+///   二进制，先删 app 会让 launchd 反复拉起失败并刷噪音日志；
+/// - **plist 排在 `entries` 第一位**：即使后面某一步删除失败，也不会留下
+///   "二进制没了但开机还在拉"的半残状态。
+///
+/// 演练模式会连 daemon 进程一起列出来，因为"会先停掉"是用户按下 `--yes` 前
+/// 最该知道的一件事。
 pub fn run(args: UninstallArgs) -> ExitCode {
     let dry_run = !args.yes;
     let purge = args.purge;

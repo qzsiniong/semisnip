@@ -50,6 +50,13 @@ pub fn refresh(cx: &mut App) {
     }
 }
 
+/// 装菜单栏图标：注册动作 → 建 `NSStatusItem` → 把句柄塞进全局。
+///
+/// 顺序不能反：`register_actions` 必须在 `build` 之前，因为菜单项的点击
+/// 是同步派发 GPUI action 的，handle 没注册就会"点了没反应"且没有任何报错。
+///
+/// 失败（图标画不出来、系统拒绝创建 status item）时返回 `Err` 让调用方决定：
+/// `lib.rs` 只记日志不中止——面板靠 `;;` 仍然可用，菜单栏只是备用入口。
 pub fn install(cx: &mut App, tx: Sender<Event>) -> anyhow::Result<()> {
     register_actions(cx, tx);
 

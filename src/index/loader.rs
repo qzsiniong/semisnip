@@ -17,18 +17,27 @@ use crate::index::model::{
 };
 use crate::usage;
 
+/// 快照的来源。抽成 trait 只为一件事：测试里能塞一个不用真读盘的实现，
+/// 或者将来换成非 YAML 后端（比如直接问 espanso daemon）时上层不用改。
 pub trait SnippetSource {
     fn load(&self) -> anyhow::Result<Snapshot>;
 }
 
+/// 从磁盘上的 espanso `match/` 目录构建快照。
 pub struct YamlSource {
+    /// espanso 根目录（`match/` 的父目录）。
     pub root: PathBuf,
+    /// espanso CLI。用于 `match list --json` 交叉校验。
     pub cli: EspansoCli,
     /// 是否跑一次 CLI 做交叉校验（测试里关掉，避免依赖 espanso 进程）。
+    ///
+    /// 关掉时 `espanso_checked` 为假、所有片段都按 `usable: true` 处理——
+    /// 也就是"不知道，先当作能用"，而不是"全都不能用"。
     pub reconcile: bool,
 }
 
 impl YamlSource {
+    /// 默认配置：读真实磁盘，并做 espanso 交叉校验。
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -39,6 +48,12 @@ impl YamlSource {
 }
 
 impl SnippetSource for YamlSource {
+    /// 加载流程：收集文件 → 逐个解析 → 建 trigger 倒排 → 交叉校验。
+    ///
+    /// 单文件失败只进 `diagnostics`，不影响其他文件——一个手滑写坏的 YAML
+    /// 不该让整个面板变空。
+    ///
+    /// 返回值里的 `built_at_ms` 是这份快照的版本号，前台靠它判断检索表是否过期。
     fn load(&self) -> anyhow::Result<Snapshot> {
         let match_dir = self.root.join("match");
         let mut files = Vec::new();
@@ -163,6 +178,11 @@ fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// 解析一个文件，兼容两种顶层写法。
+///
+/// espanso 官方格式是 `matches: [...]`，但手写文件里常有人直接给一个列表。
+/// 先按官方形状试，失败再试裸列表；两次都失败才报错。
+/// 返回 `Err(String)` 而不是 `anyhow::Error`：这个错误只用来拼诊断文本。
 fn parse_file(raw: &str) -> Result<Vec<RawMatch>, String> {
     if let Ok(file) = serde_yaml::from_str::<MatchFile>(raw) {
         return Ok(file.matches);
@@ -171,6 +191,12 @@ fn parse_file(raw: &str) -> Result<Vec<RawMatch>, String> {
     serde_yaml::from_str::<Vec<RawMatch>>(raw).map_err(|err| err.to_string())
 }
 
+/// 把一条原始 match 转成归一化片段。返回 `None` 表示这条没有可用 trigger，
+/// 应当被静默丢弃（不算诊断：espanso 也会忽略它）。
+///
+/// 正文来源按 espanso 的优先级取第一个存在的：`replace` → `markdown` → `html`
+/// → `image_path` → `form`。五个都没有时给空正文而不是丢弃——片段仍能被搜到，
+/// 详情栏会显示空内容，这比"凭空少一条"更容易发现问题。
 fn build_snippet(file: &Path, ordinal: usize, raw: RawMatch) -> Option<Snippet> {
     let mut triggers = raw.triggers.clone().unwrap_or_default();
     if let Some(field) = raw.trigger.clone() {
@@ -252,6 +278,7 @@ fn build_snippet(file: &Path, ordinal: usize, raw: RawMatch) -> Option<Snippet> 
     })
 }
 
+/// 表单字段归一化。缺 `type` 时按 `text` 处理（espanso 的默认值）。
 fn form_field(name: &str, field: &RawFormField) -> FormField {
     FormField {
         name: name.to_string(),
@@ -262,6 +289,10 @@ fn form_field(name: &str, field: &RawFormField) -> FormField {
     }
 }
 
+/// 把 YAML 标量转成字符串。
+///
+/// 只认字符串/数字/布尔：序列和映射（比如 `values: [{label, value}]` 里的对象）
+/// 返回 `None`，由调用方过滤掉——预览里显示 `{label: ..., value: ...}` 只会更乱。
 fn yaml_scalar(value: &serde_yaml::Value) -> Option<String> {
     match value {
         serde_yaml::Value::String(s) => Some(s.clone()),
@@ -271,6 +302,11 @@ fn yaml_scalar(value: &serde_yaml::Value) -> Option<String> {
     }
 }
 
+/// 解析图片路径。
+///
+/// 绝对路径原样返回；相对路径按两种理解依次尝试：先看当前工作目录（`exists()`），
+/// 再退化到"相对 YAML 文件所在目录"——后者是 espanso 的实际语义，但很多用户
+/// 是在 daemon 的工作目录下写相对路径，两种都得认。
 fn resolve_image_path(file: &Path, raw: &str) -> PathBuf {
     let path = PathBuf::from(raw);
     if path.is_absolute() || path.exists() {
@@ -279,6 +315,11 @@ fn resolve_image_path(file: &Path, raw: &str) -> PathBuf {
     file.parent().map(|p| p.join(&path)).unwrap_or(path)
 }
 
+/// 判断文件是否位于某个 espanso package 里，是的话返回包名。
+///
+/// espanso 的布局是 `match/packages/<包名>/...`，所以要从路径尾部往上数三级。
+/// 只认这个固定层级：更深的子目录（`packages/demo/sub/x.yml`）仍归属 `demo`，
+/// 因为往上数到 `packages` 的父级为止——`grand == "packages"` 那一步就是判断依据。
 fn package_name(file: &Path) -> Option<String> {
     let mut parts = file.components().rev();
     // .../packages/<name>/package.yml
@@ -291,6 +332,11 @@ fn package_name(file: &Path) -> Option<String> {
     (grand == "packages").then(|| owner.to_string())
 }
 
+/// 生成片段 id：路径 + 序号 + trigger 的哈希。
+///
+/// 刻意不用自增序号：重建索引（文件监听会频繁触发）时自增会让所有 id 变化，
+/// 任何按 id 记住选中项的地方都会错位。用内容哈希，同一片段在两次重建之间
+/// 得到同一个 id；同一文件里两条 trigger 完全相同的 match 靠 `ordinal` 区分。
 fn hash_id(file: &Path, ordinal: usize, triggers: &[String]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     file.hash(&mut hasher);
@@ -299,6 +345,10 @@ fn hash_id(file: &Path, ordinal: usize, triggers: &[String]) -> u64 {
     hasher.finish()
 }
 
+/// 按字符截断并补省略号。用于"没有 label 时从正文首行造一个"。
+///
+/// 按 `chars()` 切，避免把中文/emoji 切坏；`max_chars` 给的是显示宽度上限，
+/// 不是字节数。
 fn truncate(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();

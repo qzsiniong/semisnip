@@ -60,6 +60,8 @@ struct Palette {
 }
 
 impl Palette {
+    /// 从当前主题取一次色。所有取值都走组件库的 token，不写死颜色——
+    /// 这样系统切深浅色时整页跟着变，不需要在每个 `text_color` 上分叉。
     fn of(cx: &App) -> Self {
         let theme = cx.theme();
         Self {
@@ -120,11 +122,16 @@ pub struct OnboardingState {
     handle: Option<AnyWindowHandle>,
 }
 
+/// 全局的引导窗状态。与设置窗口同一套模式：窗口存在与否由 `update` 的成败判断。
 pub struct GlobalOnboarding(pub Entity<OnboardingState>);
 
 impl Global for GlobalOnboarding {}
 
 impl OnboardingState {
+    /// 从第 0 步开始，并在打开时做一次体检。
+    ///
+    /// 体检放在这里而不是 `open` 里：`open` 还要处理"已有窗口提到最前"的分支，
+    /// 只有真正新建窗口才需要算这些（算一次要起 `espanso --version` 子进程）。
     fn new(cx: &App) -> Self {
         Self {
             step: 0,
@@ -148,6 +155,10 @@ impl OnboardingState {
 }
 
 /// 打开引导窗口（已开着就提到最前）。
+///
+/// 与设置窗口同一套模式：先 `set_global` 再 `open_window`（第一帧渲染就要读全局），
+/// 最后 `activate(true)` 把窗口提到前面——daemon 是 Accessory 应用，
+/// 不激活的话用户会以为引导没弹出来。
 pub fn open(cx: &mut App) -> anyhow::Result<()> {
     if let Some(entity) = cx.try_global::<GlobalOnboarding>().map(|g| g.0.clone()) {
         if let Some(handle) = entity.read(cx).handle {
@@ -198,6 +209,12 @@ pub fn open(cx: &mut App) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 impl Render for OnboardingState {
+    /// 画整页：主体（图标/标题/卡片/说明）+ 页脚（返回 · 圆点 · 继续）。
+    ///
+    /// 版式的三条硬约束，改动时别破坏：
+    /// - 内容区限宽 `CONTENT_W` 并居中：行宽超过这个数中文就很难读；
+    /// - `flex_1 + min_h_0` 给主体，保证卡片变高时页脚仍贴着底部；
+    /// - 页脚用 `justify_between` 三块排开，按钮文案变化不会把圆点推歪。
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::of(cx);
 

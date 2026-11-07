@@ -46,6 +46,8 @@ const FIELDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// `config` 的子命令。写操作只有 `set` / `unset` / `reset` 三个，
+/// 其余都是只读——`edit` 交给 `$EDITOR`，所以它也不会碰文件。
 #[derive(Debug, Subcommand)]
 pub enum ConfigCmd {
     /// 显示当前配置（默认动作）
@@ -81,6 +83,11 @@ pub enum ConfigCmd {
     Edit,
 }
 
+/// 分派 `config` 的子命令；不带子命令时等价于 `show`。
+///
+/// 所有写操作都先把整份文件读成 `Mapping` 再改单键，原因是 `write_yaml`
+/// 只能接收一个完整值——先反序列化成 `Config` 再写回会丢掉未知字段，
+/// 用 `Mapping` 能保住用户手写的其他键（注释会丢，这一点在模块头里已声明）。
 pub fn run(cmd: Option<ConfigCmd>) -> ExitCode {
     match cmd.unwrap_or(ConfigCmd::Show) {
         ConfigCmd::Show => show(),

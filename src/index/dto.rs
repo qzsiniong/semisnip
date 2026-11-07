@@ -8,12 +8,24 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+/// 一个 YAML 文件的顶层形状。espanso 规定顶层是 `matches:` 列表。
+///
+/// `#[serde(default)]` 不能省：空的 match 文件（只有注释）在 espanso 里是合法的，
+/// 没有它会让整个文件解析失败。
 #[derive(Debug, Default, Deserialize)]
 pub struct MatchFile {
     #[serde(default)]
     pub matches: Vec<RawMatch>,
 }
 
+/// 一条 match 的原始字段，与 espanso 的键一一对应。
+///
+/// 这里**可以出现多个正文来源**（replace / markdown / html / image / form），
+/// espanso 的实际行为是"按优先顺序取第一个存在的"，这里不校验互斥性——
+/// 用户写错了我们照单全收，由 `loader::build_snippet` 决定用哪个。
+///
+/// 刻意不声明 `unknown` 之外的其他 espanso 字段（`regex` 除外）：serde 默认忽略
+/// 未知键，所以 `app_filter` / `propagate_case` / `force_mode` 这些不会导致失败。
 #[derive(Debug, Default, Deserialize)]
 pub struct RawMatch {
     /// `trigger: ";;log"`
@@ -22,6 +34,7 @@ pub struct RawMatch {
     /// `triggers: ["a", "b"]`
     #[serde(default)]
     pub triggers: Option<Vec<String>>,
+    /// 正则 trigger。面板不把它当可输入的触发符，仅作信息展示。
     #[serde(default)]
     pub regex: Option<String>,
     #[serde(default)]
@@ -30,6 +43,7 @@ pub struct RawMatch {
     pub markdown: Option<String>,
     #[serde(default)]
     pub html: Option<String>,
+    /// 图片路径。相对路径以所在 YAML 文件为基准解析（见 `resolve_image_path`）。
     #[serde(default)]
     pub image_path: Option<String>,
     #[serde(default)]
@@ -43,10 +57,16 @@ pub struct RawMatch {
     /// `form:` 简写（多行 layout 字符串）
     #[serde(default)]
     pub form: Option<String>,
+    /// `form:` 的完整写法：字段定义表。用 `BTreeMap` 是为了字段顺序稳定
+    /// （预览里字段列表每次都一样，不会因为 HashMap 随机序抖动）。
     #[serde(default)]
     pub form_fields: Option<BTreeMap<String, RawFormField>>,
 }
 
+/// `trigger:` 的两种写法。
+///
+/// `untagged` 让 serde 按形状自己挑：单个字符串走 `One`，列表走 `Many`。
+/// 不能写成 `Vec<String>` + 自定义反序列化，那样错误信息会变得难以定位。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum TriggerField {
@@ -55,6 +75,7 @@ pub enum TriggerField {
 }
 
 impl TriggerField {
+    /// 归一成列表，调用方不必区分两种写法。
     pub fn into_vec(self) -> Vec<String> {
         match self {
             Self::One(s) => vec![s],
@@ -63,6 +84,10 @@ impl TriggerField {
     }
 }
 
+/// 一个变量的原始定义。`params` 保持成 `Value`，按类型取用（见 `VarSpec`）。
+///
+/// `name` / `type` 没有 `default`：缺了它们这条变量就没法用，让 serde 直接报错
+/// 比解析出一个空名字要好——后者会在预览里显示成 `{{}}`。
 #[derive(Debug, Deserialize)]
 pub struct RawVar {
     pub name: String,
@@ -72,6 +97,10 @@ pub struct RawVar {
     pub params: serde_yaml::Value,
 }
 
+/// `form_fields` 里的单个字段。
+///
+/// `default` / `values` 用 `Value` 而不是 `String`：espanso 允许写数字和布尔
+/// （比如 `default: 0`），直接按 `String` 解会让整条 match 失败。
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct RawFormField {
     #[serde(rename = "type", default)]

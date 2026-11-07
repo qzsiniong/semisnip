@@ -1,4 +1,10 @@
 //! daemon 侧：UDS 监听 + 单实例。
+//!
+//! 只接受本机连接，并且 socket 权限设为 `0600`——同一台机器上的其他用户
+//! 不该能打开你的片段面板（面板内容会暴露片段正文）。
+//!
+//! 每个连接一个线程：请求都是毫秒级的，线程数由连接数决定，实际不会超过个位数。
+//! 刻意不做线程池——引入调度器换不来可测量的收益，却多一层出错可能。
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -14,7 +20,11 @@ use crate::paths;
 /// 回答「daemon 的 tap 真的装上了吗」。由调用方注入，ipc 不认识 trigger。
 pub type TapProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// 绑定 socket 并起监听线程。
+/// 绑定 socket 并起监听线程。返回 socket 路径（调用方打日志用）。
+///
+/// 单实例靠"能不能连上"判断，而不是 pid 文件：pid 文件在崩溃后会留下错误的
+/// 数字，而 socket 的死活是系统层面的真相——daemon 活着就能连上，崩了就
+/// `ECONNREFUSED`，此时那个文件是垃圾，删掉重绑。
 pub fn serve(tx: Sender<Event>, tap_ready: TapProbe) -> Result<PathBuf, ServeError> {
     paths::ensure_dirs();
     let path = paths::socket_path();
@@ -70,6 +80,14 @@ impl std::fmt::Display for ServeError {
     }
 }
 
+/// 处理一个连接：读一行请求 → 派发 → 写一行响应，然后关闭。
+///
+/// 协议是"一问一答一连接"，不复用连接：CLI 每次请求都是新进程，复用反而要
+/// 处理连接生命周期与超时。读完一行就 `into_inner()` 拿回流写响应，
+/// 因为 `BufReader` 独占所有权。
+///
+/// 解析失败也回一个 `Error` 响应而不是直接断开：CLI 那边能拿到具体原因，
+/// 比"连接被重置"好排查。
 fn handle(stream: UnixStream, tx: Sender<Event>, tap_ready: TapProbe) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -88,6 +106,8 @@ fn handle(stream: UnixStream, tx: Sender<Event>, tap_ready: TapProbe) {
     }
 }
 
+/// 把请求翻成事件投给调度器。**不在这里直接改状态**：
+/// 所有副作用都必须发生在那一个事件循环里，否则会和 tap、文件监听抢同一份状态。
 fn dispatch(req: Request, tx: &Sender<Event>, tap_ready: &TapProbe) -> Response {
     use super::proto::PROTOCOL_VERSION;
     match req {

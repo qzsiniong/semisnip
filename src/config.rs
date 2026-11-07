@@ -34,6 +34,11 @@ const HEADER: &str = "\
 # yaml-language-server: $schema=./config.schema.json
 ";
 
+/// 面板的激活方式。
+///
+/// `Activating` 目前只是留位：实现它要处理"回传前把焦点还给原 App"，
+/// 而那条路径没有稳定可靠的焦点还原方式，所以 `ui::window` 始终按
+/// `Nonactivating` 建窗。值保留在配置里是为了将来能改，不是误导。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusMode {
@@ -44,6 +49,11 @@ pub enum FocusMode {
     Activating,
 }
 
+/// 全部偏好。
+///
+/// `#[serde(default)]` 放在结构体上而不是逐字段：这样**任何**字段缺失（用户
+/// 手删了一行、或我们从旧版本加了个新字段）都退化成该字段的默认值，而不是
+/// 让整份配置解析失败。配合 `Default` 实现，升级不需要写迁移代码。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -93,6 +103,7 @@ impl Default for Config {
 }
 
 impl Config {
+    /// 从默认位置读。所有调用方都走这里，路径只由 `paths` 决定。
     pub fn load() -> Self {
         Self::load_from(&config_path())
     }
@@ -124,14 +135,28 @@ impl Config {
         Ok(format!("{HEADER}{}", serde_yaml::to_string(self)?))
     }
 
+    /// 保存到默认路径。
+    ///
+    /// 调用方（设置窗口、`config set`）在落盘后必须投 `Event::ConfigChanged`，
+    /// 否则面板还活在旧配置里——这个函数只负责写文件，不负责通知。
     pub fn save(&self) -> anyhow::Result<()> {
         self.save_to(&config_path())
     }
 
+    /// 写到指定路径（测试与迁移用）。
     fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         write_yaml_to(path, &serde_yaml::to_value(self)?)
     }
 
+    /// 把旧的 `config.json` 迁移成 `config.yml`。
+    ///
+    /// 三种结局：
+    /// - 没有旧文件 → `None`，调用方退默认值；
+    /// - 有但坏了 → 记 warn 后 `None`（不因为一份坏文件就起不来）；
+    /// - 有且能读 → 写新文件，旧文件**改名**成 `.json.bak` 而不是删除。
+    ///
+    /// 改名而不是删除：万一新写的 YAML 有问题，用户还能回去看原来的值。
+    /// 写新文件失败时也返回解析出的值（内存里继续用），只是没落盘。
     fn migrate_legacy(path: &Path) -> Option<Self> {
         let legacy = path.with_file_name("config.json");
         let raw = std::fs::read_to_string(&legacy).ok()?;
@@ -168,11 +193,19 @@ fn is_blank(raw: &str) -> bool {
 }
 
 /// 把任意 YAML 值写到默认路径（`config set` 走这条）。
+///
+/// 传 `Value` 而不是 `Config`：`config set` 只改一个键，没必要先反序列化成
+/// 完整结构再序列化回去——那样会丢掉用户手写在文件里的注释和未知字段。
 pub fn write_yaml(value: &serde_yaml::Value) -> anyhow::Result<()> {
     write_yaml_to(&config_path(), value)
 }
 
 /// 原子落盘：先写临时文件再 rename，daemon 不会读到半截配置。
+///
+/// 三步缺一不可：
+/// 1. 建目录 + 落 schema（编辑器要真实文件才肯补全）；
+/// 2. 写 `.yml.tmp` 并 `sync_all()`——不 sync 的话断电后 rename 可能指向空文件；
+/// 3. `rename` 在同一目录内是原子的，读到的要么是旧内容要么是新内容。
 fn write_yaml_to(path: &Path, value: &serde_yaml::Value) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -189,6 +222,10 @@ fn write_yaml_to(path: &Path, value: &serde_yaml::Value) -> anyhow::Result<()> {
 }
 
 /// 把 schema 落到配置旁边；内容一致就不动 mtime。
+///
+/// 返回路径供调用方打日志/提示。`ensure_schema_in` 只在内容不同时才写，
+/// 这一条很重要：编辑器按 mtime 判断要不要重载 schema，每次启动都重写会让
+/// 打开的编辑器反复弹"文件已更改"。
 pub fn ensure_schema() -> anyhow::Result<PathBuf> {
     ensure_schema_in(&config_dir())
 }

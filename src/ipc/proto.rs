@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u8 = 2;
 
+/// 面板是被谁唤起的。只影响日志与降级判断，不改变面板行为。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
@@ -25,6 +26,14 @@ fn version() -> u8 {
     PROTOCOL_VERSION
 }
 
+/// CLI → daemon 的请求。
+///
+/// 每个变体都带 `v`（协议版本），默认值取 [`PROTOCOL_VERSION`]，所以手写一条
+/// `{"op":"open"}` 也能被接受——这条对调试很有用（`nc -U socket` 就能试）。
+///
+/// 版本策略：`Ping` 不校验（"还活着吗"不该因为版本而答不上来），
+/// `Status` 严格校验（它要返回字段，字段含义可能变了），`Open`/`Reload` 目前
+/// 不校验——它们的载荷足够简单，跨版本也能正确处理。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -55,6 +64,7 @@ pub enum Request {
     },
 }
 
+/// daemon → CLI 的响应。`status` 字段既是标签也是"这一条是什么"的说明。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
@@ -73,12 +83,14 @@ pub enum Response {
 }
 
 impl Response {
+    /// 成功。带上当前协议版本，方便 CLI 发现"daemon 比客户端新"。
     pub fn ok() -> Self {
         Self::Ok {
             v: PROTOCOL_VERSION,
         }
     }
 
+    /// 失败。`message` 直接给人看，调用方（CLI）原样打到 stderr。
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             v: PROTOCOL_VERSION,

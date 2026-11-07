@@ -16,6 +16,7 @@ const DEFAULT_LINES: usize = 40;
 /// 一次最多回看 1 MiB：日志滚很久也不会把内存吃穿。
 const MAX_TAIL_BYTES: u64 = 1024 * 1024;
 
+/// `log` 的参数。默认行为是"看最近 40 行"，与 `tail` 一致。
 #[derive(Debug, Args)]
 pub struct LogArgs {
     /// 显示最近 N 行（默认 40）
@@ -44,6 +45,7 @@ pub struct LogArgs {
     action: Option<LogAction>,
 }
 
+/// 除"看日志"之外的杂事。两者都不读日志内容，只操作文件本身。
 #[derive(Debug, Subcommand)]
 pub enum LogAction {
     /// 打印日志文件路径
@@ -87,6 +89,10 @@ struct Options {
     level: Option<Level>,
 }
 
+/// 打印日志尾部，或在 `--follow` 时持续跟随。
+///
+/// 读文件而不是问 daemon：日志是唯一在 daemon 挂掉之后还有用的证据，
+/// 走 IPC 反而会在最需要它的时候拿不到。
 pub fn run(args: LogArgs) -> ExitCode {
     let path = paths::log_path();
     match args.action {

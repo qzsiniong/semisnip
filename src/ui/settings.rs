@@ -108,6 +108,13 @@ impl SettingsState {
 }
 
 /// 打开设置窗口（已开着就提到最前）。
+///
+/// 顺序上有一个必须注意的点：**先建窗口、再存句柄**。`open_window` 的闭包里
+/// 会立刻渲染一次（读 `GlobalSettings`），所以 `set_global` 必须先于
+/// `open_window`，否则第一帧的 getter 拿不到全局、会画出一份默认配置。
+///
+/// 结尾的 `cx.activate(true)` 不是可选项：daemon 是 `Accessory` 应用，
+/// 不主动激活的话窗口会开在别的 App 后面，用户以为"点了没反应"。
 pub fn open(cx: &mut App) -> anyhow::Result<()> {
     // 已有窗口：`activate_window` 会把它提到最前并抢焦点。
     // 句柄失效（用户已经关掉窗口）时 `update` 返回 Err，继续往下新建。
@@ -158,6 +165,11 @@ pub fn open(cx: &mut App) -> anyhow::Result<()> {
 }
 
 impl Render for SettingsState {
+    /// 画设置窗口：`Settings` 组件（页签 + 搜索 + 分组）+ 底部状态行。
+    ///
+    /// 底部那行是**唯一**反馈落盘结果的地方：改动没有"保存"按钮，用户需要
+    /// 知道"我刚才打的值到底有没有生效"。空状态也要给一句话（"改动立即生效"），
+    /// 留白会让人以为还差一步。
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (bg, border, muted, danger) = {
             let theme = cx.theme();

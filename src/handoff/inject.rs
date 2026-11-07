@@ -10,9 +10,13 @@ mod imp {
 
     type CGEventRef = *mut c_void;
 
+    /// `kCGSessionEventTap`：与 tap 同一层，注入的事件对所有前台 App 可见。
     const SESSION_TAP: u32 = 1;
+    /// `kCGEventSourceStateHIDSystemState`：伪造的事件"看起来像硬件发的"，
+    /// 目标 App 不会因为来源可疑而忽略它。
     const HID_STATE: i32 = 1;
 
+    /// `kCGEventFlagMaskCommand`（`NSEventModifierFlagCommand`）。
     const FLAG_COMMAND: u64 = 0x0010_0000;
 
     #[link(name = "ApplicationServices", kind = "framework")]
@@ -28,6 +32,13 @@ mod imp {
         fn CFRelease(cf: *mut c_void);
     }
 
+    /// 合成"按下 + 抬起"一对事件。
+    ///
+    /// 必须成对：只发 keyDown 会让目标 App 停在"按住"状态，下一次同样的键
+    /// 会被系统当成自动重复。`flags` 只对可打印键有意义（`Cmd+V` 用它）。
+    ///
+    /// 事件与 source 都要 `CFRelease`：这两个都是 CoreFoundation 的 +1 引用，
+    /// 漏释放会在每次展开时泄漏一点内存（daemon 是常驻进程，一天下来很可观）。
     fn press(code: u16, flags: u64) {
         unsafe {
             let source = CGEventSourceCreate(HID_STATE);
@@ -99,10 +110,17 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
+    //! 非 macOS 的空实现：保持签名一致，让上层代码不用到处 `cfg`。
+    //! 这些函数"什么都没做"是刻意的——在别的平台上 semisnip 本来就只能
+    //! 走 espanso 自己的触发，没有合成键盘事件的能力。
     pub fn backspace(_count: usize) {}
+    /// 空实现：见上面的模块说明。
     pub fn type_spaces(_count: usize) {}
+    /// 空实现。
     pub fn paste() {}
+    /// 空实现。
     pub fn type_text(_text: &str) {}
+    /// 空实现。
     pub fn press_named(_name: &str) {}
 }
 

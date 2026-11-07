@@ -3,7 +3,11 @@
 //! 触发判定只认键码：Shift+`;` 打出的是 `:`，中文输入法组合期也拿不到字符，
 //! 只有物理键码在这些情况下仍然稳定。
 
-/// (字符, 是否需要 Shift, 虚拟键码)
+/// macOS US 布局的 (字符, 是否需要 Shift, 虚拟键码)。
+///
+/// 同一个键码会出现两次（`;` 与 `:`、`1` 与 `!`），这是刻意的：反查时靠
+/// `shift` 布尔值区分。约束是**同一个 (键码, shift) 只能有一条**——否则
+/// `char_for_keycode` 会在两个候选之间摇摆，拼出来的过滤串就不确定了。
 const KEYS: &[(char, bool, u32)] = &[
     ('a', false, 0),
     ('b', false, 11),
@@ -74,24 +78,34 @@ const KEYS: &[(char, bool, u32)] = &[
     ('`', false, 50),
     ('~', true, 50),
     (' ', false, 49),
-    (',', false, 43),
-    ('.', false, 47),
 ];
 
 // ---- 特殊键 ----
+// 这些键没有"可打印字符"，单独给常量，免得调用方到处写魔数。
+/// 退格。面板里用来删过滤串。
 pub const BACKSPACE: u32 = 51;
+/// Tab。当前未使用，保留是因为 `char_for_keycode` 会把它当可打印键误判。
 pub const TAB: u32 = 48;
+/// 回车。面板里是"确认展开"。
 pub const RETURN: u32 = 36;
+/// Esc。面板里是"关闭"。
 pub const ESCAPE: u32 = 53;
+/// 空格。过滤串的分词分隔符。
 pub const SPACE: u32 = 49;
+/// 左右方向键。当前只用于粘贴兜底时的光标定位。
 pub const LEFT: u32 = 123;
 pub const RIGHT: u32 = 124;
+/// 上下方向键。面板里是"切换选中项"。
 pub const DOWN: u32 = 125;
 pub const UP: u32 = 126;
+/// `V` 与 `1`：粘贴兜底里合成 `Cmd+V` 用。
 pub const KEY_V: u32 = 9;
 pub const KEY_1: u32 = 18;
 
 /// 返回 (键码, 是否需要 Shift)。测试与粘贴兜底里用来合成任意 ASCII。
+///
+/// 大写字母走特殊路径：先在表里找小写项，再额外要求 Shift——表里没有大写的
+/// 显式条目（那会让表膨胀一倍），而 Shift+字母正是打大写的物理方式。
 pub fn keycode_and_shift(c: char) -> Option<(u32, bool)> {
     if c.is_ascii_uppercase() {
         let lower = c.to_ascii_lowercase();
@@ -101,6 +115,12 @@ pub fn keycode_and_shift(c: char) -> Option<(u32, bool)> {
     KEYS.iter().find(|k| k.0 == c).map(|k| (k.2, k.1))
 }
 
+/// 字符 → 键码，忽略 Shift 区别。
+///
+/// 触发串判定用这个：用户配了 `;;`，那么无论当前 Shift 状态如何，按下的只要是
+/// 分号那个物理键就算命中——否则开着 Shift 打触发串就会失灵。
+///
+/// 大写字母会先降成小写再查，所以 `TriggerConfig::from_text("A")` 也能通过。
 pub fn keycode_for_char(c: char) -> Option<u32> {
     let lowered = c.to_ascii_lowercase();
     KEYS.iter()
@@ -109,6 +129,11 @@ pub fn keycode_for_char(c: char) -> Option<u32> {
 }
 
 /// 键码 + Shift 还原字符（把面板里的按键拼成查询串）。
+///
+/// 精确匹配优先：`(41, true)` 必须得到 `:` 而不是 `;`。
+/// 但有个必须兜底的情况——**Shift 状态取不到**。CGEventTap 偶尔拿不到 flags
+/// （例如 Caps Lock 与 Shift 同时按），这时按键仍然是有效输入，不能丢；
+/// 于是记下第一个同键码的候选，匹配不到精确项时返回它（小写字母按 shift 升级成大写）。
 pub fn char_for_keycode(code: u32, shift: bool) -> Option<char> {
     let mut fallback: Option<char> = None;
     for k in KEYS {

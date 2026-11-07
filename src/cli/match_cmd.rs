@@ -16,6 +16,7 @@ use super::fail;
 use crate::config::Config;
 use crate::paths;
 
+/// `match` 的子命令。`regenerate` 是唯一的"写"操作。
 #[derive(Debug, Subcommand)]
 pub enum MatchCmd {
     /// 打印 semisnip.yml 的路径
@@ -34,6 +35,10 @@ pub enum MatchCmd {
     Regenerate,
 }
 
+/// 分派 `match` 的子命令；不带子命令时等价于 `show`。
+///
+/// `check` 只做只读校验（YAML 能否解析、cmd 有没有重定向 stdout），
+/// `edit` / `open` 会起外部进程，所以它们返回后不再做任何写操作。
 pub fn run(cmd: Option<MatchCmd>) -> ExitCode {
     match cmd.unwrap_or(MatchCmd::Show) {
         MatchCmd::Path => {

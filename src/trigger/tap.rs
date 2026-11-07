@@ -22,9 +22,17 @@ use crate::trigger::machine::{TriggerAction, TriggerConfig, TriggerMachine};
 /// 「遇到其它按键就收手」提前结束。
 const SWALLOW_WINDOW_MS: i64 = 800;
 
+/// tap 线程与外部（UI 线程、回传线程）共享的全部状态。
+///
+/// 每个字段的原子性选择都跟着访问频率走：`panel_open` 在每一次按键上都会被读，
+/// 用 `AtomicBool`；状态机只在按键时短暂加锁（`Mutex`），因为它的更新必须原子，
+/// 而且锁内没有 IO。
 pub struct TapShared {
+    /// 面板是否打开。**只有为真时 tap 才吞键**，否则用户正常打字会被吃掉。
     panel_open: AtomicBool,
+    /// 触发状态机。放在锁里是因为 `feed` 需要"读前缀 + 前进 + 可能复位"原子完成。
     machine: Mutex<TriggerMachine>,
+    /// 事件发送端。tap 线程不直接改 UI 状态，只投事件。
     tx: Sender<Event>,
     /// 还要吞掉多少个「别的进程合成的」退格。
     pending_backspaces: AtomicUsize,
@@ -43,17 +51,27 @@ impl TapShared {
         }
     }
 
+    /// 预告要吞的退格数量，并启动倒计时窗口。
+    ///
+    /// `store` 而不是 `fetch_add`：新的一轮展开会覆盖上一轮没吃完的额度——
+    /// 上一轮的退格（如果还没来）已经不可能再来了，留着额度只会误吞用户按键。
     fn arm_backspace_swallow(&self, count: usize) {
         self.pending_backspaces.store(count, Ordering::SeqCst);
         self.swallow_deadline_ms
             .store(crate::usage::now_ms() + SWALLOW_WINDOW_MS, Ordering::SeqCst);
     }
 
+    /// 撤销额度。`match exec` 连 IPC 都没成功时调——那些退格永远不会来，
+    /// 留着额度会让用户接下来按的退格被吞掉。
     fn clear_backspace_swallow(&self) {
         self.pending_backspaces.store(0, Ordering::SeqCst);
     }
 
     /// 是否应该吞掉这一个退格。只对调用方确认过「不是自己发的」事件调用。
+    ///
+    /// `fetch_update` 做"检查并递减"的原子操作：`checked_sub` 在已经是 0 时返回
+    /// `None`，`fetch_update` 便保持原值并返回 `Err`——这样两个并发退格不会都
+    /// 拿到额度（虽然实际只有 tap 线程会调，但这个不变量值得用类型保证）。
     fn take_backspace(&self) -> bool {
         if self.pending_backspaces.load(Ordering::SeqCst) == 0 {
             return false;
@@ -67,6 +85,10 @@ impl TapShared {
             .is_ok()
     }
 
+    /// 运行期换触发键（设置窗口改完之后调）。
+    ///
+    /// 直接换掉整个状态机而不是改 `keycodes`：旧序列的前缀在新配置下没有意义，
+    /// 换新的等于顺便 reset。
     pub fn set_trigger(&self, config: TriggerConfig) {
         if let Ok(mut machine) = self.machine.lock() {
             *machine = TriggerMachine::new(config);
@@ -78,12 +100,16 @@ static SHARED: OnceLock<Arc<TapShared>> = OnceLock::new();
 static READY: AtomicBool = AtomicBool::new(false);
 
 /// 面板是否处于接管状态：只有它为 true 时 tap 才吞键。
+///
+/// 由 `app::scheduler` 在开合面板时调用。放在全局函数里是因为 tap 回调运行在
+/// 独立的 run loop 线程上，拿不到 `AppState`——它只能读这几个原子量。
 pub fn set_panel_open(open: bool) {
     if let Some(shared) = SHARED.get() {
         shared.panel_open.store(open, Ordering::SeqCst);
     }
 }
 
+/// 面板是否正在接管键盘。回传逻辑用它判断"能不能拦下 espanso 的补偿退格"。
 pub fn is_panel_open() -> bool {
     SHARED
         .get()
@@ -126,6 +152,9 @@ pub fn clear_synthetic_backspaces() {
 }
 
 /// 是否已获得辅助功能授权（决定走 tap 还是 espanso shell）。
+///
+/// 这是**当前进程**的授权状态。从终端跑 `doctor` 会继承终端的授权，
+/// 所以它不能代表 daemon 的状态——那个要问 daemon（见 `ipc::client::status`）。
 pub fn accessibility_granted() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -135,6 +164,45 @@ pub fn accessibility_granted() -> bool {
     false
 }
 
+/// 权限补上之后重新装一次 tap，装上了返回 true。
+///
+/// [`install`] 只在启动时跑一次，结果就此固定：用户后来去系统设置里勾了
+/// 「辅助功能」，daemon 这边不会自己知道——以前只能 `launchctl kickstart` 重启，
+/// 而多数人根本不知道该敲这条命令，表现就是「授权了也没用」。
+///
+/// 这个函数给调度器每秒探一次用：授权一到，当场把 tap 接上，面板立刻能打字。
+///
+/// 三个提前返回都有意义：
+/// - 已经就绪 → 别重复装（`imp::run` 会再建一个 run loop）；
+/// - `SHARED` 还没设 → `install` 都没跑过，没东西可复用；
+/// - 没有权限 → 现在重试必然失败，而且会每秒新建一个线程。
+pub fn retry() -> bool {
+    if READY.load(Ordering::SeqCst) {
+        return true;
+    }
+    // 调试开关同上：强制降级时别让看门狗每 5 秒白建一个线程。
+    if std::env::var_os("SEMISNIP_NO_TAP").is_some() {
+        return false;
+    }
+    let Some(shared) = SHARED.get() else {
+        return false;
+    };
+    if !accessibility_granted() {
+        return false;
+    }
+    let shared = shared.clone();
+    // 不复用 `install`：`SHARED` 已经设过了，再调只会打一行「已安装过」然后返回。
+    // 状态机与 `tx` 都在 `shared` 里，重开线程即可。
+    std::thread::Builder::new()
+        .name("semisnip-tap".into())
+        .spawn(move || imp::run(shared))
+        .is_ok()
+}
+
+/// 启动 tap 线程。整个进程只会成功一次（`SHARED` 是 `OnceLock`）。
+///
+/// 不在这里判断权限：`imp::run` 会先检查，失败时投 `Event::TapUnavailable`
+/// 让 UI 切到授权引导页。这样"没授权"是一种**正常状态**，而不是启动失败。
 pub fn install(tx: Sender<Event>, config: TriggerConfig) {
     let shared = Arc::new(TapShared::new(config, tx));
     if SHARED.set(shared.clone()).is_err() {
@@ -207,9 +275,16 @@ mod imp {
         fn CFRunLoopRun();
     }
 
+    /// 回调线程的可变上下文。
+    ///
+    /// `Box::leak` 出去（见 `run`），生命周期就是进程——回调里只能拿到裸指针，
+    /// 必须保证它永不释放。`Send/Sync` 手动实现：`AtomicUsize` 与 `Arc` 本身线程
+    /// 安全，`Ctx` 会被回调线程与「重新启用 tap」的路径同时读到。
     struct Ctx {
         shared: Arc<TapShared>,
+        /// tap 句柄（`CGEventRef` 的整数形态）。被系统禁用时用它重新启用。
         tap: AtomicUsize,
+        /// 自己的 pid，用来识别"这是我合成的事件"。
         self_pid: u32,
     }
 
@@ -217,6 +292,10 @@ mod imp {
     unsafe impl Send for Ctx {}
     unsafe impl Sync for Ctx {}
 
+    /// tap 回调。**运行在独立的 run loop 线程上**，必须快：任何阻塞都会让
+    /// 系统键盘变卡。所以这里只做判定与投事件，不做 IO、不加长锁。
+    ///
+    /// 返回 `null` 表示吞掉这个事件（目标 App 收不到），返回 `event` 表示放行。
     extern "C" fn callback(
         _proxy: CGEventTapProxy,
         etype: u32,
@@ -319,12 +398,33 @@ mod imp {
         }
     }
 
+    /// `AXIsProcessTrusted()` 的薄包装。**结果会被系统缓存**：用户刚在设置里
+    /// 勾上时它可能仍返回 false，需要 tap 真正装成功后 `ready()` 才会变 true。
+    /// 这就是引导页要提供「重新检查」按钮的原因。
     pub fn ax_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
 
+    /// 建 tap、挂 run loop、阻塞运行（直到进程退出）。
+    ///
+    /// `CGEventTapCreate` 必须在**有 run loop 的线程**上调用，所以整个函数都在
+    /// tap 线程里跑，最后进 `CFRunLoopRun()` 不再返回。
+    ///
+    /// 事件掩码只订阅 keyDown/keyUp：其他类型（鼠标、滚动）一概不接，
+    /// 减少回调次数，也避免无意中看到用户的鼠标活动。
     pub fn run(shared: Arc<TapShared>) {
         unsafe {
+            // 调试开关：强制走降级路径，用来看面板的「需要授权」页长什么样。
+            // 没有这个开关，那页只有"真的没授权"的机器上才看得到——开发机上
+            // 恰恰永远是有授权的。
+            if std::env::var_os("SEMISNIP_NO_TAP").is_some() {
+                log::warn!("SEMISNIP_NO_TAP 已设置：强制降级（只看授权页时用）");
+                let _ = shared.tx.send(Event::TapUnavailable(
+                    "调试：SEMISNIP_NO_TAP 关闭了键盘接管".into(),
+                ));
+                return;
+            }
+
             if !AXIsProcessTrusted() {
                 log::warn!("缺少辅助功能权限：改用 espanso shell 触发（降级模式）");
                 let _ = shared.tx.send(Event::TapUnavailable(
@@ -379,6 +479,8 @@ mod imp {
 
     use super::*;
 
+    /// 非 macOS：没有 CGEventTap，直接告诉 UI "降级"。
+    /// 幂等——`retry` 每 5 秒会再调一次，重复投递同一个事件没有副作用。
     pub fn run(shared: Arc<TapShared>) {
         let _ = shared.tx.send(Event::TapUnavailable(
             "当前平台需要 espanso shell 触发".into(),

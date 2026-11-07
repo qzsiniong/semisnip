@@ -13,19 +13,31 @@ use crate::usage::{Entry as UsageEntry, Usage};
 const DAY_MS: i64 = 86_400_000;
 
 /// 预折叠的检索表，与 `Snapshot.snippets` 下标一一对应。
+///
 /// 每次重建索引时构建一次，之后每次按键只做比较，不再分配字符串。
+/// 这个"同下标"约定是整个检索路径的前提：`rank` 里 `index.entries[i]` 与
+/// `snapshot.snippets[i]` 必须指同一条片段，所以两张表只能同时重建。
 pub struct SearchIndex {
     entries: Vec<IndexEntry>,
 }
 
+/// 单条片段的预折叠形态。
+///
+/// 全部字段都是小写——`Query::parse` 也会把查询串转小写，比较时不必再规整。
 struct IndexEntry {
+    /// 全部 trigger（已小写）。可能有多个，搜索命中任意一个都算。
     triggers: Vec<String>,
+    /// label 小写，用于次级匹配。
     label_lower: String,
+    /// `Snippet::search_blob()` 的结果，用于覆盖检索词与正文首行。
     blob_lower: String,
+    /// 拼音索引。优先按 label 建，label 是纯 ASCII 时退到正文——
+    /// 中文用户更可能想"打字首字母命中中文标题"，而不是反过来。
     pinyin: Option<PinyinIndex>,
 }
 
 impl SearchIndex {
+    /// 从快照构建。O(条数 × 字段长度)，只在索引变化时跑，不在按键路径上。
     pub fn build(snapshot: &Snapshot) -> Self {
         let entries = snapshot
             .snippets
@@ -42,6 +54,16 @@ impl SearchIndex {
     }
 }
 
+/// 单个字段对单个 token 的相关度。
+///
+/// 四档，分数刻意留出大间隔，方便后面叠加使用时按比例打折而不打乱顺序：
+/// - 完全相等 1000
+/// - 前缀命中 700–800（字段越短分越高：`;;log` 优于 `;;logging-config`）
+/// - 子串命中 600
+/// - 子序列命中 300+（见 `subsequence_score`）
+///
+/// 返回 `None` 表示这个 token 在该字段里完全找不到。空字段也返回 `None`——
+/// 否则空串的 `starts_with` 会命中一切。
 fn field_score(query: &str, field: &str) -> Option<i64> {
     if field.is_empty() {
         return None;
@@ -60,6 +82,16 @@ fn field_score(query: &str, field: &str) -> Option<i64> {
     subsequence_score(query, field)
 }
 
+/// 子序列匹配：query 的每个字符按顺序出现在 field 里即可，不要求连续。
+///
+/// 这是"记得大概拼写"时最有用的一档。三个加分因素：
+/// - 连续命中（`prev + 1 == idx`）+6，比断开 +1 明显高：`sig` 应该优先命中
+///   `sig` 而不是 `s...i...g` 散落的字符串；
+/// - 首个字符越靠前越好（`+ (20 - first*2)`，最低 0）：前缀像的总更像目标；
+/// - 任一 query 字符找不到就返回 `None`（`?` 直接短路整个函数）。
+///
+/// 分值上限约 300 + 6×len + 20，不会越过子串档的 600，保证档位顺序不被
+/// "很长的子序列"顶翻。
 fn subsequence_score(query: &str, field: &str) -> Option<i64> {
     let hay: Vec<char> = field.chars().collect();
     let mut cursor = 0usize;
@@ -92,6 +124,18 @@ fn subsequence_score(query: &str, field: &str) -> Option<i64> {
     Some(score)
 }
 
+/// 对一条片段算出总分，并记下命中的 trigger。
+///
+/// 多个 token 之间是 **AND**：任一 token 在所有字段里都找不到就整条淘汰
+/// （`best == 0` 直接 return None）。这是刻意的——用户多打一个词，通常是想收窄
+/// 而不是放宽。
+///
+/// 各字段的权重递减（trigger 100% > label 80% > 折叠文本 60%），因为 trigger 是
+/// 用户最可能记得的东西，而正文里碰巧出现的词只能算弱证据。拼音单独一套绝对分
+/// （见下），不参与打折——它不是"字段"，而是同一字段的另一种写法。
+///
+/// 返回的 `Option<String>` 是命中的那个 trigger 原文（哪怕命中的是 label，
+/// 这里回落到第一个 trigger），`match exec` 要用它。
 fn score_entry(entry: &IndexEntry, query: &Query) -> Option<(i64, Option<String>)> {
     if query.is_empty() {
         return Some((0, None));
@@ -153,6 +197,16 @@ fn score_entry(entry: &IndexEntry, query: &Query) -> Option<(i64, Option<String>
     Some((total, matched_trigger))
 }
 
+/// 使用习惯带来的加成，上限约 165 分（频率 ≈105 + 新鲜度 60）。
+///
+/// 刻意压在"档位差"之下（1000/800/600/300 之间至少差 100）但仍在同一量级：
+/// - 频率用 `ln(1+n)` 而不是线性：第 2 次到第 3 次的意义远大于第 50 次到第 51 次；
+///   `min(60)` 封顶避免常用片段永远霸榜；
+/// - 新鲜度分四档（≤1 天 / ≤7 天 / ≤30 天 / 更久），不连续变化——用户对"昨天用过"
+///   和"两小时前用过"的感知差不了一倍，档位比分值更稳。
+///
+/// 两者相加意味着：一条精确命中的片段（1000）不会被一条常被使用但只是子序列命中
+/// （300+165）的片段顶掉，但同档位之间使用习惯能决定先后。
 fn boost(entry: UsageEntry, now_ms: i64) -> i64 {
     let freq = (entry.count.min(60) as f64).ln_1p() * 40.0;
     let recency = if entry.last_used_ms <= 0 {
@@ -170,6 +224,15 @@ fn boost(entry: UsageEntry, now_ms: i64) -> i64 {
 }
 
 /// 返回最多 `limit` 条命中，已按相关度排好。
+///
+/// 排序是全序的（每个比较链最后都落到 label 上），所以同样的输入永远给同样的
+/// 顺序——这一条对回归测试很重要，也让用户不会看到列表在两次按键之间无故抖动。
+///
+/// 比较顺序：总分 → 使用次数 → 最后使用时间 → trigger 长度（短的优先）→ label。
+/// 后两级只在"这两条几乎一样"时起作用，属于兜底去随机性。
+///
+/// `limit` 只做截断不参与打分：先给全部候选打分再取前 N，避免"提前截断导致
+/// 高分项被漏掉"。片段量级（几百到几千）下这点开销可以忽略。
 pub fn rank(
     index: &SearchIndex,
     snapshot: &Snapshot,

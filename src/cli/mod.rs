@@ -40,6 +40,8 @@ use crate::paths;
   semisnip config set trigger ,, 把触发串改成 `,,`
   semisnip log -n 100 -g 触发     回看最近的日志"
 )]
+/// 顶层参数。`subcommand_required = true` + `arg_required_else_help`：
+/// 不带子命令时打印帮助并以 0 退出，而不是默默起一个常驻 daemon。
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -116,6 +118,12 @@ impl From<OriginArg> for Origin {
     }
 }
 
+/// 解析参数并分派子命令。返回的退出码直接决定进程怎么做收尾。
+///
+/// 每条子命令的"输出纪律"不一样，改的时候要看清：
+/// - 除 `daemon` 外的命令都是秒退的短进程；
+/// - `trigger` / `type` / `key` **绝不写 stdout**（espanso 会把 stdout 当展开内容）；
+/// - 其余命令写 stdout 是给人看的，错误写 stderr。
 pub fn run() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let cli = match Cli::try_parse_from(args) {
@@ -179,6 +187,10 @@ fn classify(kind: clap::error::ErrorKind) -> ExitCode {
     }
 }
 
+/// 统一错误出口：打到 stderr，返回失败退出码。
+///
+/// 单独抽出来是为了让"错误文本前缀"只有一处：`semisnip: ` 这个格式在脚本里
+/// 被 grep 过，各处手写迟早会漏掉前缀。
 pub(crate) fn fail(message: &str) -> ExitCode {
     eprintln!("semisnip: {message}");
     ExitCode::FAILURE
@@ -198,6 +210,13 @@ fn trigger(origin: Origin) -> ExitCode {
     }
 }
 
+/// 接入 espanso：写配置、写降级触发定义、打印后续步骤。
+///
+/// 为什么还要 `config.save()`：首次安装时配置文件并不存在，而用户接着打开
+/// 设置窗口 / 手改 YAML 都需要一个带抬头和 schema 提示的起点。这里主动写一份，
+/// 比让用户面对"文件不存在"友好。
+///
+/// 输出全部走 stdout：这是给人看的命令，不是被 espanso 同步调用的路径。
 fn install() -> ExitCode {
     paths::ensure_dirs();
     let config = Config::load();
@@ -290,6 +309,13 @@ matches:
     )
 }
 
+/// 体检。逐项打印结果，最后给一句总结；退出码只看"有没有硬问题"。
+///
+/// 两个细节值得注意：
+/// - 索引是**现读**的（`YamlSource::load`），不用 daemon 的快照——体检要回答
+///   "现在磁盘上有什么"，而不是"daemon 记得什么"；
+/// - 辅助功能那一项**问 daemon**（`client::status`），不是查自己：TCC 按进程
+///   授权，从终端跑的 doctor 继承的是终端的权限，自己查只会得到误导性的绿勾。
 fn doctor() -> ExitCode {
     let mut problems = 0;
 
@@ -422,6 +448,17 @@ impl Write for Tee {
     }
 }
 
+/// 初始化日志：写文件，**同时**复制一份到 stderr。
+///
+/// stderr 这一路不需要任何"是否在终端"的判断：daemon 由 launchd 启动时标准流
+/// 已被重定向到 /dev/null，等于静默；在终端里跑 `semisnip daemon` 时又能直接
+/// 看见。两种场景用同一份代码就对。
+///
+/// **绝不写 stdout**：`trigger` 的 stdout 会被 espanso 当成展开内容，
+/// 一条日志污染的就是用户文档。
+///
+/// 配置文件打不开（目录不可写）时 `file` 为 `None`，Tee 会退化成只写 stderr——
+/// 拿不到日志总比起不来好，最多是排查时少一份证据。
 pub fn init_logging() {
     paths::ensure_dirs();
     let path = paths::log_path();
