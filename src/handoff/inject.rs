@@ -91,7 +91,12 @@ mod imp {
         press(code as u16, 0);
     }
 
-    /// 逐字符合成输入。仅用于 `semisnip type`（无辅助功能权限时的冒烟测试）。
+    /// 逐字符合成输入：取消面板时补回触发词尾巴，以及 `semisnip type`
+    /// （无辅助功能权限时的冒烟测试）。
+    ///
+    /// 只映射 ASCII（`keymap::keycode_and_shift` 的边界）——触发串本来就只允许
+    /// ASCII，所以这条限制在这里不会漏字符。8ms 的间隔是给目标 App 的输入法留的
+    /// 处理时间：连发会丢字符，尤其是在非英文输入法激活时。
     pub fn type_text(text: &str) {
         for c in text.chars() {
             let Some((code, shift)) = crate::trigger::keymap::keycode_and_shift(c) else {

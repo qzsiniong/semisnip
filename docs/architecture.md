@@ -36,7 +36,7 @@ flowchart TB
 
 | 模块 | 文件 | 职责与边界 |
 |---|---|---|
-| 触发 | `trigger/tap.rs`、`trigger/machine.rs`、`trigger/keymap.rs` | 只认物理键码，不知道片段存在；`;;` 的第二个键被吞、第一个键记为待回删 |
+| 触发 | `trigger/tap.rs`、`trigger/machine.rs`、`trigger/keymap.rs` | 只认物理键码，不知道片段存在；`;;` 的第二个键被吞、第一个键记为"已在文档里"的残留。同一个 tap 还订阅鼠标按下——只为「点面板外 = 收起面板」，判定靠开窗时记住的窗口矩形，鼠标事件永远放行 |
 | 通信 | `ipc/proto.rs`、`ipc/server.rs`、`ipc/client.rs` | UDS + NDJSON，带版本号；单实例，daemon 不在时由 CLI 自愈拉起 |
 | 数据 | `index/loader.rs`、`index/service.rs` | 唯一读 YAML 的地方，产出 `Arc<Snapshot>`；后台重建，UI 永远只读 |
 | 检索 | `search/score.rs`、`search/query.rs`、`search/pinyin.rs` | 纯函数、零 IO、确定性排序 |
@@ -45,7 +45,7 @@ flowchart TB
 | espanso | `espanso/cli.rs` | 定位可执行文件；`match exec` / `match list --json` 的唯一出口 |
 | 路径 | `paths.rs` | 全项目唯一知道「东西放哪」的文件：系统目录问 `dirs`，自己的文件、`/Applications`、`/usr/local/bin`、LaunchAgent、espanso 的 `match/` 全在这里。业务模块只许调用，不许拼字面量 |
 | 配置 | `config.rs`、`cli/config_cmd.rs` | YAML + 内嵌 JSON Schema（`assets/config.schema.json`）；只碰自己的偏好，不碰 espanso 的 YAML |
-| 界面 | `ui/window.rs`、`ui/view.rs` | 面板：`WindowKind::PopUp`（NSPanel + NonactivatingPanel），不处理键盘；右上角 `✕` 是**唯一的鼠标出口**，它只投 `Event::Cancel`，收尾逻辑仍归 scheduler。`tap_ok` 为假时整块换成「需要授权」页——没接上键盘还画一列候选，等于骗人 |
+| 界面 | `ui/window.rs`、`ui/view.rs` | 面板：`WindowKind::PopUp`（NSPanel + NonactivatingPanel），不处理键盘；右上角 `✕` 是面板内唯一的可点元素，点面板外由 tap 的鼠标监听收起——两路都只投事件，收尾逻辑仍归 scheduler。`tap_ok` 为假时整块换成「需要授权」页——没接上键盘还画一列候选，等于骗人 |
 | 设置 | `ui/settings.rs` | 普通窗口 + gpui-component 的 `Settings`；字段直接读写一份全局 `SettingsState`，改动立即落盘并投 `ConfigChanged` |
 | 引导 | `ui/onboarding.rs` | 四步首次引导；体检是打开时的一次快照（`espanso --version` 要起进程），走完写 `onboarded` |
 | 窗口公共 | `ui/mod.rs` | 主题跟随系统外观（`sync_theme`）、`reveal()`、打开辅助功能设置页 |
@@ -61,6 +61,11 @@ flowchart TB
 按键由 CGEventTap 吞下后直接改 `AppState`，不经过 gpui 的键盘事件，因此面板本身不接收焦点。
 
 代价是拿不到 IME 会话：过滤只能走物理键码映射，中文过滤词要靠拼音索引。见 [故障排查 · 已知限制](troubleshooting.md#已知限制)。
+
+面板不抢焦点，也意味着**点别处不会自动收起来**：`NonactivatingPanel` 不会收到 `resignKey`，光标从来没在它身上。所以收面板要靠自己判：tap 订阅了鼠标按下，拿 `CGEventGetLocation` 与开窗时记下的窗口矩形比一比，落在外面就投 `Event::ClickOutside`。两个细节值得写下来：
+
+- 鼠标事件**一律放行**，绝不吞——面板里还要点 `✕`、点授权页的按钮，抢了点击就全废了；
+- 这一路收尾**不动目标文档**。点下去的那一刻前台窗口正在换人，合成出来的退格或补字符可能落到新窗口里；键盘那几条路（`Esc`、`✕`、菜单栏）前台没变，才敢把触发词补回去。
 
 ## 回传顺序
 
@@ -93,6 +98,8 @@ sequenceDiagram
 ```
 
 `match exec` 没有回执，失败只能靠退出码和 `espanso log`。
+
+**取消走相反的方向。** `handoff::keep_trigger` 不想让光标"干净"，而是要让状态回到"没触发过"：把 tap 吞掉的那个键补回去，`;;` 原样留在文档里。两条路都只能通过 `handoff` 合成按键，所以写在一个模块里——方向写反的表现是"按 Esc 吃掉半截触发词"或"回车之后文档里多一个分号"。
 
 ## 两条回传协议
 

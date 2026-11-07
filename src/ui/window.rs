@@ -47,9 +47,25 @@ pub fn open(cx: &mut App, state: Entity<AppState>) -> anyhow::Result<()> {
     match gpui_kit::open_window(options, cx, move |_window, _cx| view.clone()) {
         Ok((handle, _)) => {
             state.update(cx, |state, _| state.handle = Some(handle));
+            // 把窗口矩形交给鼠标监听：面板开着时，tap 靠它区分"点面板里"与
+            // "点面板外"。量不到就传 0，那一轮退化成"点哪都不关"（见
+            // `trigger::tap::PanelRect`）。位置写进日志，出问题时能直接对照。
+            match handle.update(cx, |_, window, _| window.bounds()) {
+                Ok(bounds) => {
+                    let (x, y) = (bounds.origin.x.as_f32(), bounds.origin.y.as_f32());
+                    let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
+                    crate::trigger::tap::set_panel_bounds(
+                        f64::from(x),
+                        f64::from(y),
+                        f64::from(w),
+                        f64::from(h),
+                    );
+                    log::info!("面板已打开 {w}x{h} @ ({x:.0},{y:.0})");
+                }
+                Err(err) => log::warn!("量不到面板位置，点外部关闭本轮不可用：{err}"),
+            }
             // 菜单第一项是「打开 / 关闭」二选一，开合之后必须重建。
             crate::tray::refresh(cx);
-            log::info!("面板已打开 {width}x{height}");
             Ok(())
         }
         Err(err) => anyhow::bail!("{err:?}"),

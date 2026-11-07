@@ -31,12 +31,18 @@ impl KeyMsg {
 /// 没有任何线程会绕过事件通道直接改 `AppState`。
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// 打开面板。`erase` 是被自己吞掉、需要回删的字符数。
+    /// 打开面板。`erase` 是触发词里已经落进文档的字符数（tap 路径 = 长度 - 1），
+    /// 取消时用它判断要补回几个字，见 `AppState::missing_trigger`。
     Open { origin: Origin, erase: usize },
     /// 面板里的一次按键。只由 tap 线程产生。
     Key(KeyMsg),
     /// 收起面板（Esc、关闭按钮、菜单项都汇聚到这里）。
     Cancel,
+    /// 点了面板窗口外面（面板开着时，由 tap 的鼠标监听判定）。
+    ///
+    /// 与 [`Event::Cancel`] 分开是因为**收尾动作不同**：点击会把前台窗口换掉，
+    /// 之后任何合成按键都可能落到新窗口里，所以这一路绝不能去动目标文档。
+    ClickOutside,
     /// 索引快照更新，重新计算候选。
     IndexUpdated,
     /// 请求从磁盘重建索引。

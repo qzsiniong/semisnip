@@ -126,7 +126,7 @@ fn register_actions(cx: &mut App, tx: Sender<Event>) {
     });
 
     // 与按 Esc 完全同一条路：Cancel 会让 scheduler 放开吞键、删窗口、
-    // 必要时回删触发符。这里绝不能自己关窗，否则收尾逻辑会分叉。
+    // 把触发词补回文档。这里绝不能自己关窗，否则收尾逻辑会分叉。
     let close = tx.clone();
     cx.on_action(move |_: &ClosePanel, _: &mut App| {
         let _ = close.send(Event::Cancel);

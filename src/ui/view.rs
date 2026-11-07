@@ -44,8 +44,8 @@ struct Palette {
 /// 连个鼠标入口都没有，用户就只能强杀 daemon。
 ///
 /// 所以这里给一个不依赖键盘、也不依赖权限的出口：点一下等于按 `Esc`，
-/// 统一投 [`Event::Cancel`] 交给 scheduler 收尾（放开吞键、删窗口、必要时回删
-/// 触发符），不在这里直接关窗——两条关闭路径必须走同一套收尾逻辑。
+/// 统一投 [`Event::Cancel`] 交给 scheduler 收尾（放开吞键、删窗口、把触发词
+/// 补回文档），不在这里直接关窗——几条关闭路径必须走同一套收尾逻辑。
 fn close_button(p: Palette) -> AnyElement {
     div()
         .id("semisnip-close")

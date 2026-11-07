@@ -4,10 +4,16 @@
 //! 因而面板打开期间目标 App 一个字符都收不到，也就不会出现
 //! "过滤串漏进文档"的竞态。
 //!
-//! 三处必须小心：
-//! 1. 自己合成的事件（回删 / 粘贴）会被自己的 tap 看到 → 用 source pid 过滤；
+//! 同一个 tap 也订阅鼠标按下，只为一件事：**点面板外面就收起面板**。
+//! 放在一起而不是另开 `NSEvent` 全局监听，是因为两者要同一份"谁在前台"的事实，
+//! 而且 tap 已经有辅助功能授权，不需要再申请一种权限。
+//!
+//! 四处必须小心：
+//! 1. 自己合成的事件（回删 / 粘贴 / 补触发词）会被自己的 tap 看到 → 用 source pid
+//!    过滤，另加触发静默窗口（合成事件不一定带得到 pid，见 [`TapShared::mute_trigger`]）；
 //! 2. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
-//! 3. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉。
+//! 3. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
+//! 4. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
@@ -21,6 +27,30 @@ use crate::trigger::machine::{TriggerAction, TriggerConfig, TriggerMachine};
 /// 但系统繁忙时可能晚几十毫秒。窗口只用来兜底，正常情况下会被
 /// 「遇到其它按键就收手」提前结束。
 const SWALLOW_WINDOW_MS: i64 = 800;
+
+/// 面板窗口在屏幕上的位置与大小（点，原点在屏幕左上角）。
+///
+/// 只在开窗时写一次：面板不可拖动、不可缩放，位置在整个生命周期里不变。
+/// `width/height` 为 0 表示"还没量到"，此时鼠标判定一律跳过（宁可不关面板，
+/// 也不要因为坐标缺失变成"点哪都关"）。
+#[derive(Clone, Copy, Default)]
+struct PanelRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl PanelRect {
+    /// 点是否落在面板窗口里。矩形为退化值时返回 `true`——把"不知道"当成"在里面"，
+    /// 这样缺坐标时最坏是退化成旧行为（点外面不关），而不是误关。
+    fn contains(&self, x: f64, y: f64) -> bool {
+        if self.width <= 0.0 || self.height <= 0.0 {
+            return true;
+        }
+        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+    }
+}
 
 /// tap 线程与外部（UI 线程、回传线程）共享的全部状态。
 ///
@@ -38,6 +68,10 @@ pub struct TapShared {
     pending_backspaces: AtomicUsize,
     /// 上述额度的截止时间（epoch ms）。
     swallow_deadline_ms: AtomicI64,
+    /// 触发判定的静默截止时间（epoch ms）。见 [`TapShared::mute_trigger`]。
+    mute_until_ms: AtomicI64,
+    /// 面板窗口的屏幕矩形。鼠标按下时用来区分"点面板里"和"点面板外"。
+    panel_rect: Mutex<PanelRect>,
 }
 
 impl TapShared {
@@ -48,7 +82,42 @@ impl TapShared {
             tx,
             pending_backspaces: AtomicUsize::new(0),
             swallow_deadline_ms: AtomicI64::new(0),
+            mute_until_ms: AtomicI64::new(0),
+            panel_rect: Mutex::new(PanelRect::default()),
         }
+    }
+
+    /// 记下面板窗口的位置（开窗时调一次）。
+    fn set_panel_rect(&self, rect: PanelRect) {
+        if let Ok(mut slot) = self.panel_rect.lock() {
+            *slot = rect;
+        }
+    }
+
+    /// 这个点是不是落在面板窗口里。拿不到锁时按"在里面"处理——见
+    /// [`PanelRect::contains`] 的退化约定。
+    fn panel_contains(&self, x: f64, y: f64) -> bool {
+        self.panel_rect
+            .lock()
+            .map(|rect| rect.contains(x, y))
+            .unwrap_or(true)
+    }
+
+    /// 接下来 `ms` 毫秒内**不要**把按键喂给触发状态机。
+    ///
+    /// 取消面板时要把触发词补回文档（见 `handoff::keep_trigger`），那些字符是
+    /// 我们自己合成的。不能只指望 source pid 过滤：`CGEventSourceCreate` 造出来的
+    /// 事件在某些系统版本上 `kCGEventSourceUnixProcessID` 是 0，于是会被当成
+    /// 用户输入。单字符触发串（`/`）一旦漏过去就是死循环——补 `/` → 立即命中 →
+    /// 面板又开 → 再取消……
+    fn mute_trigger(&self, ms: i64) {
+        self.mute_until_ms
+            .store(crate::usage::now_ms() + ms, Ordering::SeqCst);
+    }
+
+    /// 触发判定是否处于静默期。
+    fn trigger_muted(&self) -> bool {
+        crate::usage::now_ms() < self.mute_until_ms.load(Ordering::SeqCst)
     }
 
     /// 预告要吞的退格数量，并启动倒计时窗口。
@@ -117,6 +186,27 @@ pub fn is_panel_open() -> bool {
         .unwrap_or(false)
 }
 
+/// 记下面板窗口在屏幕上的矩形（单位：点，原点在屏幕左上角）。
+///
+/// 由 `ui::window::open` 在窗口建好之后调用。**必须在打开时写**，因为鼠标按下
+/// 到达 tap 时只认这几个数：面板不可拖动，所以整个生命周期量一次就够。
+///
+/// 坐标系是 gpui 的 `Window::bounds()`：屏幕左上角原点、单位为点——与
+/// `CGEventGetLocation` 的全局坐标同一套，所以可以直接比较。面板恒居中在
+/// **主显示器**上（`WindowBounds::centered` 的语义），这正是两者能对齐的前提。
+///
+/// 传 0 宽高表示「还没量到」，此时鼠标判定直接跳过（见 [`PanelRect::contains`]）。
+pub fn set_panel_bounds(x: f64, y: f64, width: f64, height: f64) {
+    if let Some(shared) = SHARED.get() {
+        shared.set_panel_rect(PanelRect {
+            x,
+            y,
+            width,
+            height,
+        });
+    }
+}
+
 /// tap 是否已装上（缺权限时为 false，此时走 espanso shell 降级路径）。
 pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
@@ -148,6 +238,16 @@ pub fn swallow_synthetic_backspaces(count: usize) {
 pub fn clear_synthetic_backspaces() {
     if let Some(shared) = SHARED.get() {
         shared.clear_backspace_swallow();
+    }
+}
+
+/// 接下来 `ms` 毫秒内不判定触发。
+///
+/// 只有一处调用：[`crate::handoff::keep_trigger`]——它要把触发词合成回文档，
+/// 那些按键必须先被"当成不是用户打的"。见 [`TapShared::mute_trigger`]。
+pub fn mute_trigger(ms: u64) {
+    if let Some(shared) = SHARED.get() {
+        shared.mute_trigger(ms as i64);
     }
 }
 
@@ -233,6 +333,11 @@ mod imp {
 
     const KEY_DOWN: u32 = 10;
     const KEY_UP: u32 = 11;
+    /// `kCGEventLeftMouseDown` / `kCGEventRightMouseDown` / `kCGEventOtherMouseDown`。
+    /// 只订阅"按下"：抬起没有信息量，多订阅一类事件就多一次回调。
+    const LEFT_MOUSE_DOWN: u32 = 1;
+    const RIGHT_MOUSE_DOWN: u32 = 3;
+    const OTHER_MOUSE_DOWN: u32 = 25;
     const DISABLED_TIMEOUT: u32 = 0xFFFF_FFFE;
     const DISABLED_USER: u32 = 0xFFFF_FFFF;
 
@@ -259,7 +364,18 @@ mod imp {
         fn CGEventTapEnable(tap: CGEventRef, enable: bool);
         fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
         fn CGEventGetFlags(event: CGEventRef) -> u64;
+        /// 鼠标事件的全局位置：屏幕左上角为原点、单位为点，与 `Window::bounds()` 同一套。
+        fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
         fn AXIsProcessTrusted() -> bool;
+    }
+
+    /// `CGPoint` 的镜像。自己定义而不是引 `core_graphics`：这里只需要传值，
+    /// 布局是两个连续的 `f64`（`#[repr(C)]` 保证与 C 一致）。
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -356,6 +472,11 @@ mod imp {
                     return std::ptr::null_mut();
                 }
 
+                if ctx.shared.trigger_muted() {
+                    // 补触发词期间的合成按键：放行（字符要落到文档里），但不判定。
+                    return event;
+                }
+
                 if msg.is_shortcut() || msg.alt {
                     return event;
                 }
@@ -386,6 +507,21 @@ mod imp {
                 }
                 event
             }
+            // 鼠标按下：只为"点面板外 = 收起面板"。**永远放行**——面板是辅助窗口，
+            // 用户的点击该落在哪就落在哪，我们绝不抢（`✕`、授权页按钮都靠它）。
+            LEFT_MOUSE_DOWN | RIGHT_MOUSE_DOWN | OTHER_MOUSE_DOWN => {
+                if !ctx.shared.panel_open.load(Ordering::SeqCst) {
+                    return event;
+                }
+                let point = unsafe { CGEventGetLocation(event) };
+                if ctx.shared.panel_contains(point.x, point.y) {
+                    return event;
+                }
+                log::info!("点击面板外（{:.0},{:.0}），收起面板", point.x, point.y);
+                // 与按 Esc 不同的事件：点击会把前台窗口换掉，收尾时不能去动文档。
+                let _ = ctx.shared.tx.send(Event::ClickOutside);
+                event
+            }
             DISABLED_TIMEOUT | DISABLED_USER => {
                 log::warn!("事件 tap 被系统禁用，尝试重新启用");
                 let tap = ctx.tap.load(Ordering::SeqCst);
@@ -410,8 +546,8 @@ mod imp {
     /// `CGEventTapCreate` 必须在**有 run loop 的线程**上调用，所以整个函数都在
     /// tap 线程里跑，最后进 `CFRunLoopRun()` 不再返回。
     ///
-    /// 事件掩码只订阅 keyDown/keyUp：其他类型（鼠标、滚动）一概不接，
-    /// 减少回调次数，也避免无意中看到用户的鼠标活动。
+    /// 事件掩码只订阅 keyDown/keyUp 与三种"鼠标按下"：滚动、移动、抬起一概不接，
+    /// 减少回调次数，也避免无意中看到用户的鼠标轨迹（我们只需要知道"点在哪"）。
     pub fn run(shared: Arc<TapShared>) {
         unsafe {
             // 调试开关：强制走降级路径，用来看面板的「需要授权」页长什么样。
@@ -439,7 +575,12 @@ mod imp {
                 self_pid: std::process::id(),
             }));
 
-            let mask: u64 = (1u64 << KEY_DOWN) | (1u64 << KEY_UP);
+            // 鼠标按下也要订阅：见 callback 里的 `LEFT_MOUSE_DOWN` 分支。
+            let mask: u64 = (1u64 << KEY_DOWN)
+                | (1u64 << KEY_UP)
+                | (1u64 << LEFT_MOUSE_DOWN)
+                | (1u64 << RIGHT_MOUSE_DOWN)
+                | (1u64 << OTHER_MOUSE_DOWN);
             let tap = CGEventTapCreate(
                 SESSION_TAP,
                 HEAD_INSERT,
@@ -528,5 +669,43 @@ mod tests {
         shared.arm_backspace_swallow(4);
         shared.clear_backspace_swallow();
         assert!(!shared.take_backspace());
+    }
+
+    #[test]
+    fn muting_skips_trigger_detection_until_it_expires() {
+        let shared = shared();
+        assert!(!shared.trigger_muted(), "默认不静默");
+        shared.mute_trigger(250);
+        assert!(shared.trigger_muted(), "刚设上必须静默");
+        // 把截止时间拨到过去，等价于"窗口已经过去"
+        shared
+            .mute_until_ms
+            .store(crate::usage::now_ms() - 1, Ordering::SeqCst);
+        assert!(!shared.trigger_muted(), "过期后必须恢复判定");
+    }
+
+    #[test]
+    fn panel_rect_tells_inside_from_outside() {
+        let rect = PanelRect {
+            x: 100.0,
+            y: 50.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        // 四个角都算里面（边界含）
+        assert!(rect.contains(100.0, 50.0), "左上角");
+        assert!(rect.contains(300.0, 150.0), "右下角");
+        assert!(!rect.contains(99.0, 100.0), "左边一点");
+        assert!(!rect.contains(301.0, 100.0), "右边一点");
+        assert!(!rect.contains(200.0, 151.0), "下边一点");
+    }
+
+    #[test]
+    fn unknown_rect_never_closes_the_panel() {
+        // 还没量到窗口位置（或量失败）时按"在里面"处理：最坏是老行为——点外面
+        // 不关面板；反过来（按"在外面"）就会变成"点哪都关"，连 `✕` 都点不动。
+        let rect = PanelRect::default();
+        assert!(rect.contains(0.0, 0.0));
+        assert!(rect.contains(9999.0, 9999.0));
     }
 }

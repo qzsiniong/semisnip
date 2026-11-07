@@ -111,15 +111,15 @@ fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
 
 fn handle(cx: &mut App, state: &Entity<AppState>, tx: &Sender<Event>, event: Event) {
     match event {
-        Event::Open { erase, .. } => {
+        Event::Open { origin, erase } => {
             // 幂等：espanso 的 shell 唤醒与自己的 tap 可能同时到达。
             if state.read(cx).open {
                 log::debug!("面板已打开，忽略重复的 open");
                 return;
             }
-            log::info!("打开面板：erase={erase}");
+            log::info!("打开面板：origin={origin:?} erase={erase}");
             state.update(cx, |state, cx| {
-                state.begin_open(erase);
+                state.begin_open(origin, erase);
                 // 开面板这一刻按 tap 的真实状态决定画什么：有授权就画列表，
                 // 没有就画授权页——摆一列点了没反应的候选等于骗人。
                 state.tap_ok = tap::ready();
@@ -145,12 +145,13 @@ fn handle(cx: &mut App, state: &Entity<AppState>, tx: &Sender<Event>, event: Eve
             });
             match intent {
                 Intent::None => {}
-                Intent::Cancel => cancel(cx, state),
+                Intent::Cancel => cancel(cx, state, Doc::Restore),
                 Intent::Confirm(hit) => confirm(cx, state, hit),
             }
         }
 
-        Event::Cancel => cancel(cx, state),
+        Event::Cancel => cancel(cx, state, Doc::Restore),
+        Event::ClickOutside => cancel(cx, state, Doc::Leave),
 
         Event::IndexUpdated => {
             state.update(cx, |state, cx| {
@@ -189,17 +190,50 @@ fn handle(cx: &mut App, state: &Entity<AppState>, tx: &Sender<Event>, event: Eve
     }
 }
 
-/// 取消：把吞掉的那一个触发符回删掉，文档保持干净。
-/// 只有 tap 路径会出现 `erase > 0`；espanso 唤醒的路径由 espanso 自己抹掉 trigger。
-fn cancel(cx: &mut App, state: &Entity<AppState>) {
-    let erase = state.read(cx).erase;
+/// 收起面板时要不要动目标文档。
+///
+/// 分成两种，是因为"退出"有两种完全不同的处境：键盘退出时前台没变，补进去的字符
+/// 一定落在原来那个输入框；鼠标点别处时前台正在换人，同一个字符可能落到新窗口。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Doc {
+    /// 把被吞掉的触发词补回去（Esc / `✕` / 菜单栏 / 退格退到空）。
+    Restore,
+    /// 什么都不做（点击面板外）。
+    Leave,
+}
+
+/// 取消：收起面板，并按 [`Doc`] 决定要不要把触发词**补回**文档。
+///
+/// 取消的语义是"当作没触发过"：用户打出的 `;;` 该留在输入框里，而不是被面板
+/// 吃掉。只有 tap 路径需要动手——它吞掉了最后一个触发键，文档里少一个字符；
+/// espanso 降级 / 菜单栏 / 手动唤起时文档里本来就是完整的触发词（见
+/// `AppState::missing_trigger`），`tail` 会是 `None`。
+///
+/// 顺序与确认路径相反：必须先关窗放开吞键，再合成按键，否则补回去的分号会被
+/// 自己的 tap 再吃一遍。
+fn cancel(cx: &mut App, state: &Entity<AppState>, doc: Doc) {
+    let (tail, residual) = match doc {
+        Doc::Restore => {
+            let state = state.read(cx);
+            (state.missing_trigger(), state.erase)
+        }
+        // 干脆连"要补什么"都不算：算出来只会诱使后来的人在这里动手。
+        Doc::Leave => (None, 0),
+    };
     close(cx, state);
-    if erase > 0 {
-        std::thread::Builder::new()
-            .name("semisnip-erase".into())
-            .spawn(move || crate::handoff::inject::backspace(erase))
-            .ok();
+
+    if tail.is_none() && residual == 0 {
+        return;
     }
+    std::thread::Builder::new()
+        .name("semisnip-restore".into())
+        .spawn(move || match tail {
+            Some(tail) => crate::handoff::keep_trigger(&tail),
+            // 兜底：报告了残留、却算不出该补什么（现在的来源里没有这种组合）。
+            // 退回"删干净"总比在用户文档里留半截触发符好。
+            None => crate::handoff::inject::backspace(residual),
+        })
+        .ok();
 }
 
 fn close(cx: &mut App, state: &Entity<AppState>) {

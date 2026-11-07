@@ -488,7 +488,7 @@ fn card(
             rows.push(card_row(
                 palette,
                 "3 · 回车",
-                "把 trigger 交给 espanso 求值并注入；Esc 取消，会顺手回删残留的分号。",
+                "把 trigger 交给 espanso 求值并注入；Esc 取消，`;;` 会原样留在输入框里。",
                 keycap(palette, "↵"),
                 true,
             ));
