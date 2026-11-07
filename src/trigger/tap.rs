@@ -11,22 +11,24 @@
 //! 四处必须小心：
 //! 1. 自己合成的事件（回删 / 粘贴 / 补触发词）会被自己的 tap 看到 → 用 source pid
 //!    过滤，另加触发静默窗口（合成事件不一定带得到 pid，见 [`TapShared::mute_trigger`]）；
-//! 2. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
-//! 3. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
-//! 4. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
+//! 2. 外部进程（espanso / 其他注入工具）合成的事件**一律放行**，即使面板开着——
+//!    它们可能是某轮尚未结束的展开（补偿退格 + 展开文本），吞了就是"文档留半截
+//!    触发词"或"展开结果缺一截"（见 [`route_panel_key`]）；
+//! 3. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
+//! 4. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
+//! 5. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
+//!
+//! 注意：这里**不**拦截 espanso 给 `match exec` 发的补偿退格（占位空格方案，
+//! 见 `handoff::confirm`）。早期版本用"时间窗口 + 数量"的预算去猜哪串退格是
+//! 自己那轮的，两种触发方式交替使用时会互相误伤，已废弃。
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::app::event::{Event, KeyMsg};
 use crate::trigger::machine::{TriggerAction, TriggerConfig, TriggerMachine};
-
-/// 补偿退格的吞掉窗口：espanso 收到 `match exec` 后几乎立刻发退格，
-/// 但系统繁忙时可能晚几十毫秒。窗口只用来兜底，正常情况下会被
-/// 「遇到其它按键就收手」提前结束。
-const SWALLOW_WINDOW_MS: i64 = 800;
 
 /// 面板窗口在屏幕上的位置与大小（点，原点在屏幕左上角）。
 ///
@@ -64,10 +66,6 @@ pub struct TapShared {
     machine: Mutex<TriggerMachine>,
     /// 事件发送端。tap 线程不直接改 UI 状态，只投事件。
     tx: Sender<Event>,
-    /// 还要吞掉多少个「别的进程合成的」退格。
-    pending_backspaces: AtomicUsize,
-    /// 上述额度的截止时间（epoch ms）。
-    swallow_deadline_ms: AtomicI64,
     /// 触发判定的静默截止时间（epoch ms）。见 [`TapShared::mute_trigger`]。
     mute_until_ms: AtomicI64,
     /// 面板窗口的屏幕矩形。鼠标按下时用来区分"点面板里"和"点面板外"。
@@ -80,8 +78,6 @@ impl TapShared {
             panel_open: AtomicBool::new(false),
             machine: Mutex::new(TriggerMachine::new(config)),
             tx,
-            pending_backspaces: AtomicUsize::new(0),
-            swallow_deadline_ms: AtomicI64::new(0),
             mute_until_ms: AtomicI64::new(0),
             panel_rect: Mutex::new(PanelRect::default()),
         }
@@ -120,40 +116,6 @@ impl TapShared {
         crate::usage::now_ms() < self.mute_until_ms.load(Ordering::SeqCst)
     }
 
-    /// 预告要吞的退格数量，并启动倒计时窗口。
-    ///
-    /// `store` 而不是 `fetch_add`：新的一轮展开会覆盖上一轮没吃完的额度——
-    /// 上一轮的退格（如果还没来）已经不可能再来了，留着额度只会误吞用户按键。
-    fn arm_backspace_swallow(&self, count: usize) {
-        self.pending_backspaces.store(count, Ordering::SeqCst);
-        self.swallow_deadline_ms
-            .store(crate::usage::now_ms() + SWALLOW_WINDOW_MS, Ordering::SeqCst);
-    }
-
-    /// 撤销额度。`match exec` 连 IPC 都没成功时调——那些退格永远不会来，
-    /// 留着额度会让用户接下来按的退格被吞掉。
-    fn clear_backspace_swallow(&self) {
-        self.pending_backspaces.store(0, Ordering::SeqCst);
-    }
-
-    /// 是否应该吞掉这一个退格。只对调用方确认过「不是自己发的」事件调用。
-    ///
-    /// `fetch_update` 做"检查并递减"的原子操作：`checked_sub` 在已经是 0 时返回
-    /// `None`，`fetch_update` 便保持原值并返回 `Err`——这样两个并发退格不会都
-    /// 拿到额度（虽然实际只有 tap 线程会调，但这个不变量值得用类型保证）。
-    fn take_backspace(&self) -> bool {
-        if self.pending_backspaces.load(Ordering::SeqCst) == 0 {
-            return false;
-        }
-        if crate::usage::now_ms() > self.swallow_deadline_ms.load(Ordering::SeqCst) {
-            self.clear_backspace_swallow();
-            return false;
-        }
-        self.pending_backspaces
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
-    }
-
     /// 运行期换触发键（设置窗口改完之后调）。
     ///
     /// 直接换掉整个状态机而不是改 `keycodes`：旧序列的前缀在新配置下没有意义，
@@ -176,14 +138,6 @@ pub fn set_panel_open(open: bool) {
     if let Some(shared) = SHARED.get() {
         shared.panel_open.store(open, Ordering::SeqCst);
     }
-}
-
-/// 面板是否正在接管键盘。回传逻辑用它判断"能不能拦下 espanso 的补偿退格"。
-pub fn is_panel_open() -> bool {
-    SHARED
-        .get()
-        .map(|s| s.panel_open.load(Ordering::SeqCst))
-        .unwrap_or(false)
 }
 
 /// 记下面板窗口在屏幕上的矩形（单位：点，**全局坐标**、原点在主屏左上角）。
@@ -224,24 +178,6 @@ pub fn set_trigger(config: TriggerConfig) {
     }
 }
 
-/// 预告：接下来会有 `count` 个由 espanso 合成的退格，别让它们落到目标 App。
-///
-/// `espanso match exec` 会按 trigger 全长回删字符（引擎里的 TriggerCompensation）。
-/// 我们调用前已经把面板吞掉的触发符删掉了，如果放任这些退格通过，
-/// 它们会顺着光标继续吃掉用户的真实字符（`9876543210` → `98765`）。
-pub fn swallow_synthetic_backspaces(count: usize) {
-    if let Some(shared) = SHARED.get() {
-        shared.arm_backspace_swallow(count);
-    }
-}
-
-/// 撤销预告（`match exec` 连 IPC 都没成功时用，避免误吞后续按键）。
-pub fn clear_synthetic_backspaces() {
-    if let Some(shared) = SHARED.get() {
-        shared.clear_backspace_swallow();
-    }
-}
-
 /// 接下来 `ms` 毫秒内不判定触发。
 ///
 /// 只有一处调用：[`crate::handoff::keep_trigger`]——它要把触发词合成回文档，
@@ -249,6 +185,36 @@ pub fn clear_synthetic_backspaces() {
 pub fn mute_trigger(ms: u64) {
     if let Some(shared) = SHARED.get() {
         shared.mute_trigger(ms as i64);
+    }
+}
+
+/// 面板打开时，一个按键事件该不该被当成「面板输入」。
+///
+/// 规则只有一条且必须记住：**面板只吃物理按键**（source pid ≤ 0 的 HID 事件）。
+/// 外部进程合成的事件——最典型的是 espanso 某一轮尚未结束的展开（补偿退格 +
+/// 展开文本），也可能是输入法提交、剪贴板工具注入——即使在面板打开期间也要
+/// 原样放行：
+///
+/// - 吞掉**退格**：那一轮展开要删的触发词删不掉，文档里留下半截 `:shel`；
+/// - 吞掉**文本**：展开结果缺一截，或者整段被当成过滤词塞进面板。
+///
+/// 两种触发方式（espanso 原生 `:shell` 与面板确认）交替使用时，前后两轮的
+/// 注入在时间上很容易重叠（shell 变量一跑几百毫秒），所以"面板开着 = 键都是
+/// 打给面板的"这个假设必然误伤。KEY_DOWN 与 KEY_UP 共用本判定，否则会出现
+/// "放行了 keyDown 却吞了 keyUp"的卡键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// 交给面板（物理按键且面板打开）。
+    Panel,
+    /// 原样放行给系统。
+    Pass,
+}
+
+fn route_panel_key(panel_open: bool, source_pid: i64) -> KeyRoute {
+    if panel_open && source_pid <= 0 {
+        KeyRoute::Panel
+    } else {
+        KeyRoute::Pass
     }
 }
 
@@ -438,23 +404,6 @@ mod imp {
                 let code = CGEventGetIntegerValueField(event, FIELD_KEYCODE) as u32;
                 let flags = CGEventGetFlags(event);
 
-                // espanso 展开时会先按 trigger 全长发一串退格（TriggerCompensation）。
-                // 这些是它合成的键盘事件（source 是 espanso 的 pid），必须在
-                // 到达目标 App 之前吞掉，否则会删掉用户光标前的真实字符。
-                if code == crate::trigger::keymap::BACKSPACE {
-                    if source > 0
-                        && !ctx.shared.panel_open.load(Ordering::SeqCst)
-                        && ctx.shared.take_backspace()
-                    {
-                        log::debug!("吞掉 espanso 的补偿退格（source={source}）");
-                        return std::ptr::null_mut();
-                    }
-                } else if source > 0 {
-                    // 补偿退格总在展开文本之前；出现别的键就说明这一轮结束了，
-                    // 立刻收手，避免误吞用户后续的退格。
-                    ctx.shared.clear_backspace_swallow();
-                }
-
                 let msg = KeyMsg {
                     code,
                     shift: flags & FLAG_SHIFT != 0,
@@ -463,14 +412,25 @@ mod imp {
                     command: flags & FLAG_COMMAND != 0,
                 };
 
-                if ctx.shared.panel_open.load(Ordering::SeqCst) {
-                    if msg.is_shortcut() {
-                        // 系统快捷键不归我们管：放行并收面板
-                        let _ = ctx.shared.tx.send(Event::Cancel);
+                match route_panel_key(ctx.shared.panel_open.load(Ordering::SeqCst), source) {
+                    KeyRoute::Panel => {
+                        if msg.is_shortcut() {
+                            // 系统快捷键不归我们管：放行并收面板
+                            let _ = ctx.shared.tx.send(Event::Cancel);
+                            return event;
+                        }
+                        let _ = ctx.shared.tx.send(Event::Key(msg));
+                        return std::ptr::null_mut();
+                    }
+                    KeyRoute::Pass if source > 0 => {
+                        // 外部进程合成的事件：放行。面板关着也不喂触发状态机——
+                        // 这里放行的很可能是某轮尚未结束的 espanso 展开（补偿
+                        // 退格或展开文本），吞了就是"文档留半截触发词"或"展开
+                        // 结果缺一截"，喂进状态机则可能被展开文本里的字符误触发。
+                        // 见 `route_panel_key`。
                         return event;
                     }
-                    let _ = ctx.shared.tx.send(Event::Key(msg));
-                    return std::ptr::null_mut();
+                    KeyRoute::Pass => {}
                 }
 
                 if ctx.shared.trigger_muted() {
@@ -502,12 +462,16 @@ mod imp {
                     TriggerAction::Pass => event,
                 }
             },
-            KEY_UP => {
-                if ctx.shared.panel_open.load(Ordering::SeqCst) {
+            KEY_UP => unsafe {
+                if ctx.shared.panel_open.load(Ordering::SeqCst)
+                    && CGEventGetIntegerValueField(event, FIELD_SOURCE_PID) <= 0
+                {
+                    // 只吞物理按键的 keyUp；外部合成事件的 keyUp 必须放行，
+                    // 否则它的 keyDown 已放行、keyUp 被吞，目标 App 会看到"按住不放"。
                     return std::ptr::null_mut();
                 }
                 event
-            }
+            },
             // 鼠标按下：只为"点面板外 = 收起面板"。**永远放行**——面板是辅助窗口，
             // 用户的点击该落在哪就落在哪，我们绝不抢（`✕`、授权页按钮都靠它）。
             LEFT_MOUSE_DOWN | RIGHT_MOUSE_DOWN | OTHER_MOUSE_DOWN => {
@@ -641,35 +605,15 @@ mod tests {
     }
 
     #[test]
-    fn swallow_budget_is_exact() {
-        let shared = shared();
-        shared.arm_backspace_swallow(2);
-        assert!(shared.take_backspace(), "第 1 个应该被吞");
-        assert!(shared.take_backspace(), "第 2 个应该被吞");
-        assert!(!shared.take_backspace(), "额度用完就不能再吞");
-    }
-
-    #[test]
-    fn expired_budget_does_not_eat_keys() {
-        let shared = shared();
-        shared.arm_backspace_swallow(3);
-        shared
-            .swallow_deadline_ms
-            .store(crate::usage::now_ms() - 1, Ordering::SeqCst);
-        assert!(!shared.take_backspace(), "过期后必须放行");
-        assert_eq!(
-            shared.pending_backspaces.load(Ordering::SeqCst),
-            0,
-            "过期时应顺手清零，避免下一轮误吞"
-        );
-    }
-
-    #[test]
-    fn clearing_cancels_pending() {
-        let shared = shared();
-        shared.arm_backspace_swallow(4);
-        shared.clear_backspace_swallow();
-        assert!(!shared.take_backspace());
+    fn panel_takes_physical_keys_only() {
+        // 面板打开 + 物理按键（HID 事件没有 source pid）→ 面板输入
+        assert_eq!(route_panel_key(true, 0), KeyRoute::Panel);
+        // 面板打开 + 外部进程合成的事件 → 放行：可能是某轮未结束的 espanso
+        // 展开（补偿退格 / 展开文本），吞了就是"删除不足"或"展开缺一截"
+        assert_eq!(route_panel_key(true, 231), KeyRoute::Pass);
+        // 面板关闭：一律放行（外部事件也不该喂触发状态机）
+        assert_eq!(route_panel_key(false, 0), KeyRoute::Pass);
+        assert_eq!(route_panel_key(false, 231), KeyRoute::Pass);
     }
 
     #[test]

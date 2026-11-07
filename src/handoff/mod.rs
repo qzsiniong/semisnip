@@ -3,9 +3,20 @@
 //! 顺序很重要，而且只有一种正确顺序：
 //!   1) 面板已经 orderOut（调用方负责），否则注入会打在面板上；
 //!   2) 回删被吞掉的触发符（`erase` 个）；
-//!   3) 拦住 espanso 的 TriggerCompensation：它执行 `match exec` 时会
-//!      **按 trigger 全长回删字符**，不拦就会吃掉光标前的真实用户文本；
-//!   4) `espanso match exec -t <trigger>` —— espanso 求值并注入到前台 App。
+//!   3) 打 `trigger_len` 个**占位空格**；
+//!   4) `espanso match exec -t <trigger>` —— espanso 求值，并按 trigger 全长
+//!      回删字符（TriggerCompensation）——删掉的恰好是那串占位空格——
+//!      然后把展开文本注入到前台 App。
+//!
+//! 为什么用占位空格、而不是把 espanso 的补偿退格"吞掉"：补偿退格到达的时机
+//! 不可预估。espanso 的注入管线是串行的，前面还压着一轮慢展开（shell 变量一跑
+//! 几百毫秒）时，这一轮的退格可能 800ms 之后才来。早期版本用"时间窗口 + 数量"
+//! 的预算去猜哪串退格属于自己，espanso 原生触发（`:shell`）与面板确认交替使用
+//! 时前后两轮在时间上重叠，预算互相误伤：原生轮的退格被吞 → 文档留半截触发词
+//! （"删除不足"）；展开文本一到达又把预算清空 → 真正的补偿退格放行 → 删掉
+//! 光标前的真实字符（"展开结果与预期不符"）。占位空格不依赖任何时序假设：
+//! 退格无论何时来、属于哪一轮，删的都是恰好 `trigger_len` 个可丢弃的空格。
+//! tap 那边配套的规则是"外部进程合成的事件一律放行"（`trigger::tap`）。
 //!
 //! 因为面板是非激活的，前台 App 全程没变，所以这里**不需要**还原焦点、
 //! 也不需要 espanso 官方 search bar 那套 200ms 等待。
@@ -41,31 +52,24 @@ pub enum Outcome {
 /// - `config`：`post_exec_delay_ms` 与 `allow_paste_fallback` 在这里生效；
 /// - `fallback_text`：espanso 不可用时粘贴什么，由 `AppState::fallback_text` 提供。
 ///
-/// 失败路径的处理顺序值得注意：先 `clear_synthetic_backspaces` 撤掉"预告"，
-/// 再在 tap 离线时把补位空格退掉，最后才决定要不要粘贴。顺序反了会在文档里
-/// 留下一串空格或吃掉用户文本。
+/// 失败路径的处理顺序值得注意：`match exec` 连 IPC 都没成功就不会有补偿退格，
+/// 占位空格原封不动留在文档里，要先退掉它们、再决定要不要粘贴。顺序反了会
+/// 在文档里留下一串空格。
 pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&str>) -> Outcome {
     let trigger_len = hit.trigger.chars().count();
-    let tap_online = crate::trigger::tap::ready();
 
     // 1) 文档里只剩面板吞掉的那几个触发符，先删干净。
     if erase > 0 {
         inject::backspace(erase);
     }
 
-    // 2) espanso 会按 trigger 全长回删（engine 的 TriggerCompensation）。
-    //    tap 在线时直接吞掉这串合成退格；离线时没法拦截，只能用空格补位，
-    //    让它的退格只吃掉补位，而不是用户的真实文本。
-    if tap_online {
-        crate::trigger::tap::swallow_synthetic_backspaces(trigger_len);
-    } else if trigger_len > 0 {
+    // 2) 占位空格：给 espanso 的补偿退格预备恰好 trigger_len 个可删字符。
+    //    详见模块注释——不要试图"吞掉"这些退格来省掉空格，时序上猜不准。
+    if trigger_len > 0 {
         inject::type_spaces(trigger_len);
     }
 
-    log::info!(
-        "回传 {}：erase={erase} trigger_len={trigger_len} tap={tap_online}",
-        hit.trigger
-    );
+    log::info!("回传 {}：erase={erase} pad={trigger_len}", hit.trigger);
 
     if config.post_exec_delay_ms > 0 {
         std::thread::sleep(Duration::from_millis(config.post_exec_delay_ms));
@@ -75,9 +79,8 @@ pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&
     match cli.exec(&hit.trigger) {
         Ok(()) => Outcome::Expanded,
         Err(err) => {
-            // IPC 都没成功，就不会有补偿退格：撤掉预告，并收回补位空格。
-            crate::trigger::tap::clear_synthetic_backspaces();
-            if !tap_online && trigger_len > 0 {
+            // IPC 都没成功，就没有补偿退格来收走占位空格：自己退掉。
+            if trigger_len > 0 {
                 inject::backspace(trigger_len);
             }
             log::warn!("match exec 失败：{err}");

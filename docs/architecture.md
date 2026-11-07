@@ -74,8 +74,9 @@ flowchart TB
 
 1. 面板 `orderOut`（由调用方先行关闭）
 2. 回删被吞掉的触发符（`erase` 个）
-3. `espanso match exec -t <trigger>`
-4. 失败时：`allow_paste_fallback` 为真则安全渲染 + 剪贴板粘贴，否则只记日志
+3. 打 `trigger_len` 个**占位空格**
+4. `espanso match exec -t <trigger>`——espanso 按 trigger 全长回删（TriggerCompensation），删掉的恰好是那串空格，然后注入展开文本
+5. 失败时：先退掉占位空格（IPC 没成功就没有补偿退格来收走它们），`allow_paste_fallback` 为真则安全渲染 + 剪贴板粘贴，否则只记日志
 
 ```mermaid
 sequenceDiagram
@@ -90,13 +91,29 @@ sequenceDiagram
     S->>H: confirm(hit, erase)
     H->>P: orderOut
     H->>H: 回删 erase 个触发符
+    H->>H: 打 trigger_len 个占位空格
     H->>E: match exec -t trigger
     alt 成功
+        E->>E: 补偿退格删掉占位空格
         E-->>U: 求值后注入目标输入框
     else 失败
+        H->>H: 退掉占位空格
         H->>H: 安全渲染 + 剪贴板粘贴
     end
 ```
+
+**为什么用占位空格、而不是吞掉补偿退格。** 早期版本在 `match exec` 前预告"接下来
+800ms 内有 `trigger_len` 个 espanso 退格，tap 帮我吞掉"。这在单独使用时工作正常，
+但 espanso 的注入管线是串行的，补偿退格到达的时机不可预估——前面压着一轮慢展开
+（shell 变量一跑几百毫秒）时可能 800ms 之后才来。espanso 原生触发（`:shell`）与
+面板确认**交替使用**时，前后两轮的注入在时间上重叠，预算必然误伤：原生轮的退格
+被吞 → 文档留半截触发词（表现为"删除的字符数量不足"）；原生轮的展开文本一到达
+又把预算清空 → 真正的补偿退格放行 → 删掉光标前的真实字符（表现为"展开结果与
+预期不符"）。占位空格不依赖任何时序假设：退格无论何时来、属于哪一轮，删的都是
+恰好 `trigger_len` 个可丢弃的空格。tap 那边配套的规则是"外部进程合成的事件一律
+放行，面板开着也一样"（见 `trigger::tap::route_panel_key`）。
+
+代价有二，都写在 [已知限制](troubleshooting.md#已知限制) 里：慢片段展开期间用户能短暂看到那串空格；这期间按退格会自己吃掉空格，让补偿退格多删字符。
 
 `match exec` 没有回执，失败只能靠退出码和 `espanso log`。
 

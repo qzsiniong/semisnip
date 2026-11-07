@@ -1,4 +1,4 @@
-//! 需要合成键盘事件的几处：回删残留触发符、无法拦截时的补位空格、
+//! 需要合成键盘事件的几处：回删残留触发符、给补偿退格的占位空格、
 //! `match exec` 失败时的粘贴兜底。
 //!
 //! 都在后台线程调用；合成事件带自己的 source pid，会被 tap 的
@@ -67,10 +67,11 @@ mod imp {
         }
     }
 
-    /// 打出 `count` 个空格。
+    /// 打出 `count` 个空格作为占位。
     ///
-    /// 仅在没有 tap、无法拦截 espanso 补偿退格时使用：用空格占住
-    /// 「espanso 将要回删的字符数」，让它删的是空白而不是用户文本。
+    /// `match exec` 时 espanso 会按 trigger 全长回删（TriggerCompensation），
+    /// 这些空格就是给它删的：文档里恰好有 `trigger_len` 个可丢弃字符，
+    /// 补偿退格无论何时到达，删的都是空白而不是用户文本（见 `handoff::confirm`）。
     pub fn type_spaces(count: usize) {
         for _ in 0..count {
             press(crate::trigger::keymap::SPACE as u16, 0);
