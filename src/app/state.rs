@@ -70,9 +70,9 @@ pub struct AppState {
     ///
     /// 触发串**一个键都不吞**（见 `trigger::machine`），所以 tap 路径它等于
     /// 触发串全长：确认时回删这么多（给 espanso 一个干净的光标位置），取消时
-    /// 什么都不用做——字符本来就在文档里。espanso 降级路径是降级触发串的长度
-    /// （调度器按 `origin` 算，见 `scheduler::handle`），菜单栏 / 手动唤起为 0
-    /// ——那时文档里没有触发词。
+    /// 什么都不用做——字符本来就在文档里。espanso 降级路径是 **0**：那份 match
+    /// 只让 espanso 擦掉触发串、不注回（见 `cli::render_match_file`），面板出现
+    /// 时文档已经干净；菜单栏 / 手动唤起同样是 0。
     pub erase: usize,
     /// 面板是被谁唤起的。
     ///

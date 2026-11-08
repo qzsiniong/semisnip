@@ -228,6 +228,18 @@ fn check(text: &str, expected_trigger: &str) -> Report {
             .push("文件里没出现 semisnip，确认它还在调用本程序".into());
     }
 
+    // 旧格式（`replace: ";;;{{output}}"`）会把触发串注回文档：espanso 的注入
+    // 与面板的回删/垫空格抢同一个光标位置，实测表现为文档里多出 `;;;`、甚至
+    // 删掉用户正文。升级后残留这份旧文件是最难查的一类问题，单独报出来。
+    let replace = matches[0].get("replace").and_then(Value::as_str);
+    if let Some(replace) = replace {
+        if !expected_trigger.is_empty() && replace.contains(expected_trigger) {
+            report.warns.push(format!(
+                "replace 里注回了触发串 `{expected_trigger}`（旧格式）：会和面板的回删/垫空格抢光标，跑 `semisnip match regenerate` 换成空输出格式"
+            ));
+        }
+    }
+
     // espanso 会把 shell 变量的 stdout 原样注入文档，少一个重定向就是往用户
     // 文档里塞一行垃圾。这是手改这份文件最容易犯的错，值得单独盯一眼。
     let polluted = matches.iter().any(|entry| {
@@ -282,6 +294,36 @@ mod tests {
     }
 
     #[test]
+    fn generated_file_does_not_reinject_the_trigger() {
+        // 降级 match 只负责擦掉触发串。注回触发串会让 espanso 的注入与面板的
+        // 回删/垫空格抢同一个光标位置（历史 bug：文档多出 `;;;`、正文被删）。
+        let text = generated();
+        assert!(
+            text.contains(r#"replace: "{{output}}""#),
+            "replace 必须只留空输出：\n{text}"
+        );
+        assert!(
+            !text.contains(r#"replace: ";;;"#),
+            "不许把触发串注回文档：\n{text}"
+        );
+        // stdout 也必须重定向掉：留着管道就等于允许 CLI 的意外输出污染文档。
+        assert!(text.contains(">/dev/null 2>&1"), "两条流都要静音：\n{text}");
+    }
+
+    #[test]
+    fn reinjecting_trigger_is_flagged() {
+        // 旧格式（升级前写进磁盘的那份）要被 check 认出来，否则用户会带着它跑很久。
+        let text = generated().replace(r#"replace: "{{output}}""#, r#"replace: ";;;{{output}}""#);
+        let report = check(&text, ";;;");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report.warns.iter().any(|warn| warn.contains("注回")),
+            "旧格式必须给出警告：{:?}",
+            report.warns
+        );
+    }
+
+    #[test]
     fn broken_yaml_is_an_error() {
         let report = check("matches: [\n", ";;");
         assert_eq!(report.errors.len(), 1);
@@ -307,7 +349,7 @@ mod tests {
 
     #[test]
     fn missing_stdout_redirect_is_flagged() {
-        let text = generated().replace(" 2>>/dev/null", "");
+        let text = generated().replace(" >/dev/null 2>&1", "");
         let report = check(&text, ";;");
         assert!(report.errors.is_empty());
         assert!(

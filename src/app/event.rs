@@ -32,9 +32,12 @@ impl KeyMsg {
 #[derive(Clone, Debug)]
 pub enum Event {
     /// 打开面板。`erase` 是触发词里落进文档的字符数：tap 路径 = 触发串全长
-    /// （触发键不吞，见 `trigger::machine`），espanso 降级路径由调度器按降级
-    /// 触发串长度计算，菜单栏 / 手动唤起 = 0。确认时回删这么多——取消时
-    /// 什么都不用做，字符本来就在文档里。
+    /// （触发键不吞，见 `trigger::machine`），手动唤起 = 0。
+    ///
+    /// **espanso 降级路径也是 0**：那份降级 match 只让 espanso 擦掉触发串、
+    /// 不再注回（见 `cli::render_match_file`），所以面板出现时文档里已经干净。
+    /// 之前这里按"降级触发串长度"回删，前提是 replace 会把 `;;;` 注回文档——
+    /// 那个设计让 espanso 的注入和面板的回删抢同一个光标位置，已经废掉。
     Open { origin: Origin, erase: usize },
     /// 面板里的一次按键。只由 tap 线程产生。
     Key(KeyMsg),

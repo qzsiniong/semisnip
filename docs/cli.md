@@ -45,9 +45,10 @@ semisnip match regenerate            # 按当前 exe 路径与 trigger 重写（
 
 - YAML 能否解析、`matches` 是否非空（硬错误，退出码 1）
 - `trigger` 是否与 `config.trigger` 一致——tap 路径按配置里的 trigger 吞键，两边不一致时降级触发永远对不上
+- `replace` 里有没有把触发串注回文档（旧格式）——注回会和面板的回删/垫空格抢光标，跑 `match regenerate` 换成空输出格式
 - shell 变量的 `cmd` 有没有把 stdout 重定向到 `/dev/null`——漏了它，命令输出会被原样注入用户文档
 
-后两条是警告，不拦着你保存。这个文件是**生成物**：`install` / `regenerate` 都会整份重写，手改只适合临时调试；要长期改触发串请用 `semisnip config set trigger`。
+后三条是警告，不拦着你保存。这个文件是**生成物**：`install` / `regenerate` 都会整份重写，手改只适合临时调试；要长期改触发串请用 `semisnip config set trigger`。
 
 ## `completion`
 

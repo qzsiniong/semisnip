@@ -356,10 +356,25 @@ pub fn degraded_trigger(trigger: &str) -> String {
 
 /// 生成降级路径的 match 定义：tap 不可用时由 espanso 唤醒 semisnip。
 ///
-/// `replace` 里把触发串**原样注回**（`;;;{{output}}`）不是笔误：espanso 命中
-/// 被动匹配时会先按 trigger 全长回删字符，不注回的话用户打的 `;;;` 就消失了。
-/// 注回是零损伤的——espanso 不处理自己注入的事件（否则任何自我重叠的 trigger
-/// 都会死循环），semisnip 这边外部注入也不进触发状态机（见 `trigger::tap`）。
+/// **`replace` 只留空输出，绝不注回触发串。** 这一点是踩过坑之后才定下来的：
+///
+/// espanso 命中被动匹配的执行顺序是「跑 shell 变量 → 回删 trigger 全长 →
+/// 注入 replace 文本」。变量里就是我们这个 CLI，它一退出 espanso 就开始改文档。
+/// 早期版本把触发串原样注回（`replace: ";;;{{output}}"`）想换"取消时文档不动"，
+/// 结果是**同一段文字被两家轮着写**：
+///
+/// - 注回的文本是普通字符，会落在面板的垫空格**之后**，于是文档里多出 `;;;`；
+/// - 面板打开早于这段注入时，`erase`（假设文档里躺着触发串）删掉的是用户正文；
+/// - 注入的文本如果在面板打开期间到达，还会被 tap 当成"面板输入"吞掉或吃进
+///   过滤串（espanso 的注入事件不一定带得到 source pid，见 `trigger::tap`）。
+///
+/// 现在的约定简单得多：**espanso 只负责擦掉触发串，一个字都不许往回写**。
+/// 于是面板出现时文档是干净的（触发串已消失），确认时 `erase = 0`
+/// （见 `scheduler::handle`），后续的退格/垫空格与 tap 路径完全一致。
+///
+/// 代价（写在 troubleshooting 的已知限制里）：降级路径取消面板不会把 `;;;`
+/// 补回来——它在你按下第三个键的那一刻就被 espanso 擦掉了，semisnip 全程没机会
+/// 保留它。tap 路径没有这个问题（触发键从不被吞）。
 pub fn render_match_file(exe: &str, trigger: &str) -> String {
     let degraded = degraded_trigger(trigger);
     format!(
@@ -367,23 +382,26 @@ pub fn render_match_file(exe: &str, trigger: &str) -> String {
 #
 # 作用：当 semisnip 的键盘 tap 不可用（缺辅助功能权限）时，
 # 由 espanso 的 shell 扩展唤醒面板。触发串是 `{degraded}`（比正常触发多打一个
-# 末字符）：tap 正常工作时面板会吞掉后续按键，espanso 永远凑不齐它，本文件
-# 不会生效；tap 离线时打 `{degraded}` 才能打开面板。
+# 末字符）：tap 正常工作时面板会吞掉后续按键，espanso 一般凑不齐它；tap 离线
+# 时打 `{degraded}` 才能打开面板。
 #
-# replace 里的 `{degraded}` 也是刻意的：espanso 命中时会先按 trigger 全长回删
-# 字符，原样注回才能让文档保持不动。espanso 不处理自己注入的事件，不会循环。
+# replace 是空的（`{{{{output}}}}` 只取 shell 的 stdout，而 stdout 被重定向掉了）：
+# espanso 命中后会按 trigger 全长回删触发串，**不要**把触发串注回文档。
+# 注回会和面板的"回删 + 垫占位空格"抢同一个光标位置，实测表现为文档里多出
+# `;;;`、甚至删掉用户正文。修改这一行前请先读 `cli::render_match_file` 的注释。
 #
-# 注意：shell 变量的 stdout 会被原样注入文档，所以命令必须保持静默。
+# shell 变量的 stdout 会被原样注入文档，所以命令必须同时重定向掉 stdout 与
+# stderr —— 多一个字节就会污染用户文档。
 # yaml-language-server: $schema=https://raw.githubusercontent.com/espanso/espanso/dev/schemas/match.schema.json
 matches:
   - trigger: "{degraded}"
-    replace: "{degraded}{{{{output}}}}"
+    replace: "{{{{output}}}}"
     label: "semisnip · 打开片段面板（降级触发）"
     vars:
       - name: output
         type: shell
         params:
-          cmd: "'{exe}' trigger --origin espanso 2>>/dev/null"
+          cmd: "'{exe}' trigger --origin espanso >/dev/null 2>&1"
           shell: sh
           trim: true
 "#
@@ -563,14 +581,18 @@ mod tests {
     #[test]
     fn match_file_is_silent_by_contract() {
         let yaml = render_match_file("/Applications/Semisnip.app/Contents/MacOS/semisnip", ";;");
+        // 两条流都要静音：stdout 会被 espanso 当展开内容注入，stderr 会漏进日志。
         assert!(
-            yaml.contains("2>>/dev/null"),
-            "命令必须吞掉 stdout 之外的噪声"
+            yaml.contains(">/dev/null 2>&1"),
+            "命令必须吞掉 stdout 与 stderr"
         );
-        // 触发串比配置多打一个末字符（`;;` → `;;;`），tap 在线时 espanso 永远凑不齐
+        // 触发串比配置多打一个末字符（`;;` → `;;;`）；面板吞键时它凑不齐，
+        // 取消之后补一个末字符则可能凑齐——这条路径必须随时能用。
         assert!(yaml.contains("trigger: \";;;\""));
-        // replace 必须把触发串原样注回：espanso 命中时会先回删 trigger 全长
-        assert!(yaml.contains("replace: \";;;{{output}}\""));
+        // replace 只留空输出：**不许**注回触发串（注回会和面板的回删/垫空格
+        // 抢同一个光标位置，历史 bug 会把正文删掉）。
+        assert!(yaml.contains("replace: \"{{output}}\""));
+        assert!(!yaml.contains(";;;{{output}}"), "不许注回触发串");
         // 能被 espanso 的 match schema 解析成合法 YAML
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
         assert!(parsed.get("matches").is_some());
