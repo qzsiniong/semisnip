@@ -20,6 +20,10 @@
 //! 4. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
 //! 5. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
 //!
+//! 另外有一条"不反应"的路径：配置里 `enabled` 为假（菜单栏「暂停触发」或设置
+//! 窗口里的开关）时，回调在喂状态机之前直接放行。tap 仍然装着，只是不识别触发串
+//! ——恢复不需要重启进程，权限与鼠标监听也不受影响。
+//!
 //! 触发命中时也**不吞键**：触发串的所有字符都落进目标文档（见
 //! `trigger::machine`）。tap 对文档的全部写入只剩确认路径的"回删 + 占位空格"，
 //! 取消路径是纯关闭——文档始终是诚实的。
@@ -68,6 +72,11 @@ impl PanelRect {
 pub struct TapShared {
     /// 面板是否打开。**只有为真时 tap 才吞键**，否则用户正常打字会被吃掉。
     panel_open: AtomicBool,
+    /// 是否接管触发串（配置里的 `enabled`，菜单栏可以暂停）。
+    ///
+    /// 为假时回调**不喂状态机**：`;;` 原样落进文档，面板不会弹出来。tap 本身
+    /// 仍然装着——暂停只是"不反应"，不是"卸载"，这样恢复时不需要重启进程。
+    enabled: AtomicBool,
     /// 触发状态机。放在锁里是因为 `feed` 需要"读前缀 + 前进 + 可能复位"原子完成。
     machine: Mutex<TriggerMachine>,
     /// 事件发送端。tap 线程不直接改 UI 状态，只投事件。
@@ -81,9 +90,10 @@ pub struct TapShared {
 }
 
 impl TapShared {
-    fn new(config: TriggerConfig, tx: Sender<Event>) -> Self {
+    fn new(config: TriggerConfig, tx: Sender<Event>, enabled: bool) -> Self {
         Self {
             panel_open: AtomicBool::new(false),
+            enabled: AtomicBool::new(enabled),
             machine: Mutex::new(TriggerMachine::new(config)),
             tx,
             pass_next_key_up: AtomicBool::new(false),
@@ -120,6 +130,27 @@ impl TapShared {
         if let Ok(mut machine) = self.machine.lock() {
             *machine = TriggerMachine::new(config);
         }
+    }
+
+    /// 运行期暂停 / 恢复触发（菜单栏与设置窗口都走这里）。
+    ///
+    /// 暂停时多做两件事，都不只是为了"干净"：
+    /// - **放开 `panel_open`**：暂停的语义是"不再接管键盘"，面板要是还能收按键，
+    ///   用户会以为开关没生效；
+    /// - **复位状态机**：暂停前打了半个 `;;`，恢复后不该接上那半截。
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        if !enabled {
+            self.panel_open.store(false, Ordering::SeqCst);
+            if let Ok(mut machine) = self.machine.lock() {
+                machine.reset();
+            }
+        }
+    }
+
+    /// 此刻是否接管触发串。
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
     }
 }
 
@@ -171,6 +202,16 @@ pub fn ready() -> bool {
 pub fn set_trigger(config: TriggerConfig) {
     if let Some(shared) = SHARED.get() {
         shared.set_trigger(config);
+    }
+}
+
+/// 运行期暂停 / 恢复触发串接管（配置里 `enabled` 变了之后调）。
+///
+/// 与 [`set_trigger`] 一样是"改现有 shared"，不重装 tap：`SHARED` 是
+/// `OnceLock`，重装只会打一行 warn 然后返回。
+pub fn set_enabled(enabled: bool) {
+    if let Some(shared) = SHARED.get() {
+        shared.set_enabled(enabled);
     }
 }
 
@@ -256,8 +297,11 @@ pub fn retry() -> bool {
 ///
 /// 不在这里判断权限：`imp::run` 会先检查，失败时投 `Event::TapUnavailable`
 /// 让 UI 切到授权引导页。这样"没授权"是一种**正常状态**，而不是启动失败。
-pub fn install(tx: Sender<Event>, config: TriggerConfig) {
-    let shared = Arc::new(TapShared::new(config, tx));
+///
+/// `enabled` 是配置里的「启用触发」：为假时 tap 照样装上（权限、鼠标监听都还要
+/// 用），只是不喂触发状态机。恢复由 [`set_enabled`] 在运行期改，不用重启。
+pub fn install(tx: Sender<Event>, config: TriggerConfig, enabled: bool) {
+    let shared = Arc::new(TapShared::new(config, tx, enabled));
     if SHARED.set(shared.clone()).is_err() {
         log::warn!("tap 已安装过，忽略重复安装");
         return;
@@ -420,6 +464,14 @@ mod imp {
                 }
 
                 if msg.is_shortcut() || msg.alt {
+                    return event;
+                }
+
+                // 暂停：不喂状态机、不开面板。**键照常放行**——触发键本来就不吞，
+                // 所以用户打出来的 `;;` 会原样留在文档里，这正是"暂停"该有的样子。
+                // espanso 的降级触发（`;;;`）走的是 espanso → CLI → IPC，不经过
+                // 这里，暂停期间仍然能把面板叫出来（见 `cli::render_match_file`）。
+                if !ctx.shared.is_enabled() {
                     return event;
                 }
 
@@ -590,7 +642,24 @@ mod tests {
 
     fn shared() -> TapShared {
         let (tx, _rx) = channel();
-        TapShared::new(TriggerConfig::default(), tx)
+        TapShared::new(TriggerConfig::default(), tx, true)
+    }
+
+    #[test]
+    fn pausing_stops_feeding_and_releases_the_panel() {
+        let shared = shared();
+        // 模拟"面板开着时被暂停"：面板必须一起放开，否则暂停之后键盘还在被吞。
+        shared.panel_open.store(true, Ordering::SeqCst);
+        shared.set_enabled(false);
+        assert!(!shared.is_enabled());
+        assert!(
+            !shared.panel_open.load(Ordering::SeqCst),
+            "暂停必须同时放开 panel_open，否则面板会继续吃键"
+        );
+
+        // 恢复之后回到接管状态（tap 没被卸载，所以这里是同一个 shared）
+        shared.set_enabled(true);
+        assert!(shared.is_enabled());
     }
 
     #[test]

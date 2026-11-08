@@ -235,6 +235,70 @@ pub fn template_rgba(w: u32, h: u32, inset: f32) -> Vec<u8> {
     rgba
 }
 
+/// 「已暂停」时标记保留的不透明度。
+///
+/// 0.45 是试出来的档位：再高就分不出"淡"和"正常"，再低在 15pt 上几乎看不见
+/// 笔画，只剩下一道斜杠漂在菜单栏里。
+const PAUSED_DIM: f32 = 0.45;
+
+/// 渲染成「已暂停」的模板图 RGBA：标记压淡，再斜着划一道。
+///
+/// 状态必须画出来，不能只写进菜单文案：菜单栏图标是这个程序唯一常驻的可见物，
+/// 用户按下「暂停」之后要能一眼确认它还活着、还抢不抢 `;;`。模板图只有 alpha
+/// （颜色由菜单栏明暗决定），所以只能用两个 alpha 层面的手段——变淡 + 划掉：
+///
+/// - 只变淡：在 15pt 上看起来像图标没画好；
+/// - 只划掉：标记还是满黑，远看像正常运行。
+///
+/// 斜杠从左上划到右下（`\`），与「禁止」符号同向，落到这个图标上还能顺带
+/// 从视觉上"划掉"那对分号。
+pub fn paused_rgba(w: u32, h: u32, inset: f32) -> Vec<u8> {
+    let bx = fit(w as f32, h as f32, inset);
+    // 端点按输出尺寸取比例而不是设计格子：斜杠要跨满整个图标框，
+    // 而设计格子只有 54 单位的字高，按格子算会剩一圈空白。
+    let from = (w as f32 * 0.16, h as f32 * 0.10);
+    let to = (w as f32 * 0.84, h as f32 * 0.90);
+    let thickness = (h as f32 * 0.05).max(1.0);
+
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0f32;
+            for sy in 0..SUB {
+                for sx in 0..SUB {
+                    let px = x as f32 + (sx as f32 + 0.5) / SUB as f32;
+                    let py = y as f32 + (sy as f32 + 0.5) / SUB as f32;
+                    // 斜杠不透明、标记半透明；两者重叠仍按不透明算（斜杠在上）。
+                    sum += if segment_distance(px, py, from, to) <= thickness {
+                        1.0
+                    } else if hit(bx, px, py) {
+                        PAUSED_DIM
+                    } else {
+                        0.0
+                    };
+                }
+            }
+            let alpha = (sum / (SUB * SUB) as f32 * 255.0).round().clamp(0.0, 255.0) as u8;
+            rgba.extend_from_slice(&[0, 0, 0, alpha]);
+        }
+    }
+    rgba
+}
+
+/// 点到线段的距离。斜杠的笔宽只有一两个像素，用"距离 <= 半宽"判定比
+/// 逐行切片稳——后者在折点处会漏出缺口。
+fn segment_distance(px: f32, py: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let len2 = dx * dx + dy * dy;
+    if len2 <= f32::EPSILON {
+        return ((px - from.0).powi(2) + (py - from.1).powi(2)).sqrt();
+    }
+    // 投影参数夹到 [0,1]：超出两端时距离按端点算（圆头）。
+    let t = (((px - from.0) * dx + (py - from.1) * dy) / len2).clamp(0.0, 1.0);
+    let (cx, cy) = (from.0 + t * dx, from.1 + t * dy);
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +422,55 @@ mod tests {
         let rgba = template_rgba(16, 16, 0.20);
         let solid = rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
         assert!(solid >= 6, "16px 的实心像素只有 {solid} 个，太淡");
+    }
+
+    #[test]
+    fn paused_icon_is_faded_and_slashed() {
+        // 尺寸按 `tray::icon()` 的算法推（15pt × 2 倍图），测的就是真正塞给
+        // NSStatusItem 那张图。
+        let (w, h) = (40, 30);
+        let normal = template_rgba(w, h, 0.02);
+        let paused = paused_rgba(w, h, 0.02);
+        assert_eq!(normal.len(), paused.len());
+
+        let alpha = |rgba: &[u8], x: u32, y: u32| rgba[((y * w + x) * 4 + 3) as usize];
+
+        // 四角仍然透明：斜杠两端都留了余量，不该顶到角上
+        for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+            assert_eq!(alpha(&paused, x, y), 0, "角 ({x},{y}) 不透明");
+        }
+
+        // 斜杠中点必须实心。这个点本来就有墨，所以它同时验证了"斜杠盖在标记上"：
+        // 如果斜杠没画出来，这里会继承压淡后的 alpha。
+        let (mx, my) = (w / 2, h / 2);
+        assert!(
+            alpha(&paused, mx, my) > 240,
+            "斜杠中点不够实：{}",
+            alpha(&paused, mx, my)
+        );
+
+        // 标记整体要变淡：找"正常版很实、暂停版还在但明显更淡"的像素。
+        // 少于十个就说明 PAUSED_DIM 没生效（或者被斜杠糊满了）。
+        let faded = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                alpha(&normal, x, y) > 220 && (40..180).contains(&alpha(&paused, x, y))
+            })
+            .count();
+        assert!(faded > 10, "标记没有被压淡（只有 {faded} 个像素变淡）");
+    }
+
+    #[test]
+    fn distance_to_a_segment_handles_both_ends() {
+        let from = (0.0, 0.0);
+        let to = (10.0, 0.0);
+        // 正中间：垂直距离
+        assert!((segment_distance(5.0, 3.0, from, to) - 3.0).abs() < 1e-5);
+        // 两端之外：按端点算，不按直线延长线算（否则斜杠两头会拖出尖角）
+        assert!((segment_distance(-4.0, 0.0, from, to) - 4.0).abs() < 1e-5);
+        assert!((segment_distance(14.0, 0.0, from, to) - 4.0).abs() < 1e-5);
+        // 退化线段（两个端点重合）不能除零
+        assert!(segment_distance(3.0, 4.0, from, from).is_finite());
     }
 
     #[test]

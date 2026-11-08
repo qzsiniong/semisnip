@@ -5,6 +5,12 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "enabled": {
+      "title": "启用触发",
+      "description": "是否接管触发串。false 时触发串不再弹出面板（字符照常打进文档），菜单栏图标变成暂停样式；espanso 的降级触发与菜单栏的「打开片段面板」仍然可用。",
+      "type": "boolean",
+      "default": true
+    },
     "trigger": {
       "title": "触发串",
       "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（semisnip match regenerate）。",

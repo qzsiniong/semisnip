@@ -15,6 +15,7 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 ```
 打开片段面板        ← 和 `;;` 等价，只是不用切回输入框
 ──────────
+暂停触发 ;;         ← 总开关：暂停后 `;;` 不弹面板，图标变成「划掉」样式
 偏好设置…           ← 普通窗口：触发键、面板尺寸、详情栏、粘贴兜底
 使用引导…           ← 重新走一遍四步引导（会把 onboarded 置回 false）
 ──────────
@@ -24,15 +25,51 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 打开 semisnip.yml…  ← espanso 的那个降级触发定义（不存在时打开其目录）
 打开日志…
 ──────────
+重启 semisnip       ← 交给 launchd `kickstart -k`：先收面板，再换一个新进程
 退出 semisnip       ← 走 Shutdown，先关面板再退，launchd 不会把它拉回来
                     （要再起来：Finder 里双击 Semisnip.app）
 ```
 
 第一项**随面板状态变**：面板开着就变成「关闭片段面板」。这不是装饰——面板是 `NonactivatingPanel`，收起来只有两条路：键盘（CGEventTap 转发的 `Esc`）和鼠标。没有「辅助功能」权限时 tap 根本装不上，面板一个按键都收不到；那时从菜单栏原路点「关闭」是唯一不依赖权限的出口。菜单文案按**窗口句柄**判断（不是 `state.open`），开合之后各刷一次，所以不会出现「写着打开、点下去没反应」。
 
+第三项（「暂停 / 恢复触发」）是总开关，文案里带着当前触发串（改过 `trigger` 之后菜单会跟着写 `,,`），见下面「暂停触发：图标会变」。
+
 菜单项不是直接调系统 API：面板与索引相关的那几项发 GPUI action 回到 scheduler 的事件通道——和 `semisnip trigger`、键盘 tap 走的是同一条路，所以「点菜单」和「敲 `;;`」不会有行为差异。两个窗口（设置 / 引导）反过来是直接开的：它们的生命周期和面板无关，也不该被 `panel_open` 状态影响。
 
 窗口本身（版式、字段、四步流程）见 **[设置与首次引导](settings.md)**。
+
+## 暂停触发：图标会变
+
+菜单栏的「暂停触发 `;;`」和偏好设置里的「启用触发」是**同一个开关**（配置字段 `enabled`），区别只是入口。暂停之后：
+
+- `;;` 不再弹出面板，两个分号原样落进文档——tap 仍然装着，只是不喂触发状态机；
+- **espanso 的降级触发（`;;;`）仍然可用**。那是用户明确打出来的动作，不是"顺手打的两个分号"；而且没有辅助功能权限的机器上，降级触发是唯一的唤起方式，一起停掉就等于 semisnip 凭空消失；
+- 菜单栏的「打开片段面板」也照常可用；
+- 图标换成另一种版式：标记压到 45% 不透明度，再斜着划一道（`mark::paused_rgba`）。
+
+图标必须变，是因为菜单栏是唯一常驻可见的地方：用户按下暂停之后要能一眼确认它还活着、还抢不抢 `;;`，而不是每次去菜单里翻文案。模板图只有 alpha（颜色由菜单栏明暗决定），所以只能用「变淡 + 划掉」这两个 alpha 手段——只变淡在 15pt 上像图标没画好，只划掉又像正常运行。
+
+暂停时如果面板正开着，会立刻收起来：暂停的语义是「不再接管键盘」，留一个开着的面板等于继续吞键，用户会以为开关没生效。
+
+两个入口走的是同一条链路，不存在"谁改的内存"这种分叉：
+
+```
+菜单栏「暂停触发」 ┐
+                   ├→ config.yml → Event::ConfigChanged
+设置窗口「启用触发」┘        → AppState::reload_config → tap::set_enabled
+                            → tray::sync（换图标 + tooltip + 菜单文案）
+```
+
+## 重启
+
+「重启 semisnip」走 `launchctl kickstart -k gui/<uid>/com.semisnip.daemon`，不是自己退出再拉起：
+
+- plist 里 `KeepAlive.SuccessfulExit = false`——正常退出（退出码 0）launchd **不会**重启。自己退出就等于"点了重启，进程没了"；
+- `kickstart -k` 由 launchd 先终止旧进程、再按 plist 原样拉起新实例，argv、环境变量、KeepAlive 策略与开机启动完全一致。
+
+点下去会先投一条 `Cancel` 把面板收起来（新进程是干净的，不该在屏幕上留一个旧的吞键窗口），然后交给 launchd。
+
+不是 launchd 拉起的时候（`cargo run`、终端里 `semisnip daemon`）`kickstart` 会报 `Could not find service`，此时退化成兜底路径：起一个 `sh` 等 0.8 秒再 `exec` 自己。这个等待不能省——单实例是靠 UDS `bind` 抢的，新进程早一步启动会撞上 `AlreadyRunning` 直接走掉，表现就是"重启之后什么都没了"。
 
 ## 标记
 
@@ -49,6 +86,8 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 菜单栏图标是同一个形状，但**必须单色**：模板图只认 alpha，颜色由 AppKit 按菜单栏明暗决定。所以 `tray.rs` 走的是 `mark::template_rgba()`，只出 alpha。15pt 高、按比例宽 20pt：
 
 ![菜单栏图标](../packaging/macos/tray-preview.png)
+
+暂停触发时换的是同一份几何的另一种版式（`mark::paused_rgba`：标记压到 45% 不透明度 + 一道斜杠），见上文「暂停触发：图标会变」——两个版式共用 `mark.rs` 里的字形，改斜度或粗细时两边一起变。
 
 ## 图标是生成的，仓库里不放二进制素材
 
@@ -68,7 +107,7 @@ lsappinfo list | grep -A3 -i semisnip   # 应看到 type="UIElement"
 |---|---|---|
 | `AppIcon.icns` | 10 个槽位（16…1024，含 @2x），`CFBundleIconFile` 指向它 | **忽略**，构建期重新生成 |
 | `icon-preview.png` | 512px 预览，就是上面第一张图 | 入库，README / 本文引用 |
-| `tray-preview.png` | 菜单栏图标的深浅底色对照（放大 8 倍，用来看 15pt 下认不认得出来） | 入库，同上 |
+| `tray-preview.png` | 菜单栏图标的深浅底色对照（放大 8 倍，用来看 15pt 下认不认得出来）：上排正常、下排暂停 | 入库，同上 |
 
 ### 小尺寸会少画一笔，但笔画会补粗
 

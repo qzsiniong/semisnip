@@ -24,6 +24,7 @@
 # 菜单栏 →「偏好设置…」里改会立即生效，不需要重启。
 # 改坏了也不至于起不来：解析失败时 daemon 会用默认值，并把原因写进日志。
 # yaml-language-server: $schema=./config.schema.json
+enabled: true
 trigger: ;;
 trigger_timeout_ms: 800
 focus_mode: nonactivating
@@ -71,6 +72,7 @@ semisnip config schema
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
+| `enabled` | `true` | 是否接管 `;;`。`false` 时 `;;` 不弹面板（字符照常落进文档），菜单栏图标变成「划掉」样式；espanso 的降级触发与菜单栏的「打开片段面板」仍然可用 |
 | `trigger` | `";;"` | 只允许 ASCII，最多 4 个字符，会被编译成物理键码序列 |
 | `trigger_timeout_ms` | `800` | 两个触发键之间的最大间隔（200–3000） |
 | `focus_mode` | `"nonactivating"` | 预留项；`activating` 分支尚未实现 |
@@ -109,6 +111,8 @@ semisnip config schema               # schema 路径
 - `placeholder` 只接受五个枚举值；`placeholder_char` 必须恰好一个字符且不是控制字符
 
 `set` / `unset` 会**整份重写**文件，除文件头外你手写的注释会丢；想保留注释就用 `config edit`，或者直接改文件——schema 会在编辑器里拦住写错的情况。
+
+`enabled` 比较特别：从菜单栏「暂停触发」或偏好设置里改是**立即生效**的（还会顺带换图标）；用 `config set enabled false` 改则和其它字段一样要重启 daemon。暂停状态会写进配置，重启之后仍然保持——它是个会持续几小时的临时决定，不该被一次重启抹掉。
 
 **配置在 daemon 启动时只读一次**。改完 `config set` 会打印完整的重启命令：
 

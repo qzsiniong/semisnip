@@ -11,7 +11,7 @@
 //! 产出（都在 `packaging/macos/`，内容没变时不重写，免得刷 mtime）：
 //! - `AppIcon.icns`：10 个槽位（16…1024，含 @2x），PNG 负载，手写的 ICNS 容器
 //! - `icon-preview.png`：512px 预览，README 里贴的就是它
-//! - `tray-preview.png`：菜单栏图标在深/浅底色上的对照图
+//! - `tray-preview.png`：菜单栏图标在深/浅底色上的对照图（正常 / 暂停两行）
 //!
 //! 为什么自己拼 ICNS 而不调 `iconutil`：iconutil 只在 macOS 上有，而且得先
 //! 落一盘 `.iconset` 目录；ICNS 容器就是「魔数 + 一串 (类型, 长度, 数据)」，
@@ -164,45 +164,54 @@ fn mix_f(a: Rgb, b: (f32, f32, f32), t: f32) -> Rgb {
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 
-/// 菜单栏图标在深/浅底色上的样子（放大 8 倍），用来确认 22pt 下还认得出来。
+/// 菜单栏图标在深/浅底色上的样子（放大 8 倍），用来确认 15pt 下还认得出来。
+///
+/// 两行两列：上排「正常」、下排「暂停」，左右分别是深色与浅色菜单栏。
+/// 暂停版式不是装饰——它是这张对照图存在的另一半理由：状态切换后必须还能
+/// 认出是同一个标记被划掉了，而不是变成一团糊。
 fn tray_preview() -> (Vec<u8>, u32, u32) {
     // 与 `tray.rs` 里完全相同的调用：同一份几何、同一个尺寸。
     let (w, h) = (40u32, 30u32);
-    let alpha = mark::template_rgba(w, h, 0.02);
+    let variants = [
+        mark::template_rgba(w, h, 0.02),
+        mark::paused_rgba(w, h, 0.02),
+    ];
+    // 深色菜单栏画白、浅色画黑——模板图由系统反色，这里把两种都画出来。
+    let backgrounds = [((40u8, 44u8, 52u8), 255u8), ((242, 242, 245), 28)];
 
     let zoom = 8;
     let pad = 14;
     let gap = 20;
     let (box_w, box_h) = (pad * 2 + w * zoom, pad * 2 + h * zoom);
-    let (total_w, total_h) = (box_w * 2 + gap, box_h);
+    let (total_w, total_h) = (box_w * 2 + gap, box_h * 2 + gap);
     let mut buf = vec![0u8; (total_w * total_h * 4) as usize];
 
-    // 深色菜单栏画白、浅色画黑——模板图由系统反色，这里把两种都画出来。
-    for (i, (bg, ink)) in [((40u8, 44u8, 52u8), 255u8), ((242, 242, 245), 28)]
-        .into_iter()
-        .enumerate()
-    {
-        let ox = i as u32 * (box_w + gap);
-        for y in 0..box_h {
-            for x in 0..box_w {
-                let j = ((y * total_w + ox + x) * 4) as usize;
-                buf[j..j + 4].copy_from_slice(&[bg.0, bg.1, bg.2, 255]);
-            }
-        }
-        for y in 0..h {
-            for x in 0..w {
-                let a = alpha[((y * w + x) * 4 + 3) as usize] as u32;
-                if a == 0 {
-                    continue;
+    for (row, alpha) in variants.iter().enumerate() {
+        let oy = row as u32 * (box_h + gap);
+        for (col, (bg, ink)) in backgrounds.into_iter().enumerate() {
+            let ox = col as u32 * (box_w + gap);
+            for y in 0..box_h {
+                for x in 0..box_w {
+                    let j = (((oy + y) * total_w + ox + x) * 4) as usize;
+                    buf[j..j + 4].copy_from_slice(&[bg.0, bg.1, bg.2, 255]);
                 }
-                for dy in 0..zoom {
-                    for dx in 0..zoom {
-                        let px = ox + pad + x * zoom + dx;
-                        let py = pad + y * zoom + dy;
-                        let j = ((py * total_w + px) * 4) as usize;
-                        // 覆盖率当不透明度铺在底色上，边缘才有过渡
-                        for (k, base) in [bg.0, bg.1, bg.2].into_iter().enumerate() {
-                            buf[j + k] = ((base as u32 * (255 - a) + ink as u32 * a) / 255) as u8;
+            }
+            for y in 0..h {
+                for x in 0..w {
+                    let a = alpha[((y * w + x) * 4 + 3) as usize] as u32;
+                    if a == 0 {
+                        continue;
+                    }
+                    for dy in 0..zoom {
+                        for dx in 0..zoom {
+                            let px = ox + pad + x * zoom + dx;
+                            let py = oy + pad + y * zoom + dy;
+                            let j = ((py * total_w + px) * 4) as usize;
+                            // 覆盖率当不透明度铺在底色上，边缘才有过渡
+                            for (k, base) in [bg.0, bg.1, bg.2].into_iter().enumerate() {
+                                buf[j + k] =
+                                    ((base as u32 * (255 - a) + ink as u32 * a) / 255) as u8;
+                            }
                         }
                     }
                 }

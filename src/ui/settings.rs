@@ -741,6 +741,15 @@ fn choice_item<T: Copy + PartialEq + 'static>(
 fn general_page(_config: &Config) -> SettingPage {
     SettingPage::new("通用").default_open(true).groups(vec![
         SettingGroup::new().title("触发").items(vec![
+            // 总开关排在最前面：暂停是最常用的临时动作（在终端里干活、
+            // 或者某个 App 里 `;;` 太碍事），不该翻到第三页才找得到。
+            switch_item(
+                "启用触发",
+                "关掉之后触发键不再弹出面板（字符照常打进文档）。espanso 的降级触发仍然\
+                 可用——它是你明确打出来的动作；没有辅助功能权限的机器上，那也正是唯一的\
+                 唤起方式。暂停期间菜单栏图标会换成划掉的样式，从那里也能恢复。",
+                Field::new(|c| c.enabled, |c, v| c.enabled = v, true),
+            ),
             text_item(
                 "trigger",
                 "触发键",

@@ -98,6 +98,17 @@ pub enum Placeholder {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// 是否接管 `;;`（菜单栏里叫「暂停 / 恢复触发」）。
+    ///
+    /// 为 `false` 时**只有 tap 路径停下**：`;;` 原样落进文档，面板不弹出来。
+    /// 菜单栏的「打开片段面板」与 espanso 的降级触发（`;;;`）仍然可用——
+    /// 那两条都是用户明确做出来的动作，不是"顺手打的两个分号"；而且没有辅助
+    /// 功能权限的机器上，espanso 降级触发是唯一的唤起方式，一起停掉就等于
+    /// semisnip 凭空消失了。
+    ///
+    /// 放在配置里而不是内存里：暂停是个会持续几小时的状态（比如在终端里干活），
+    /// 重启 daemon 之后还该保持。
+    pub enabled: bool,
     /// 触发串；只允许 ASCII，且会被编译成物理键码序列。
     pub trigger: String,
     /// 两个触发键之间的最大间隔。
@@ -138,6 +149,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            enabled: true,
             trigger: ";;".into(),
             trigger_timeout_ms: 800,
             focus_mode: FocusMode::Nonactivating,
@@ -400,6 +412,21 @@ mod tests {
 
         let text = std::fs::read_to_string(&yml).unwrap();
         assert!(text.starts_with("# semisnip 配置"));
+    }
+
+    #[test]
+    fn enabled_defaults_to_true_and_round_trips() {
+        // 老配置里没有这个键：不能因为"缺失"就把 `;;` 关掉——
+        // 升级之后触发键不灵，是最难让人想到原因的那种故障。
+        assert!(Config::from_yaml("trigger: \"<<\"\n").unwrap().enabled);
+        assert!(!Config::from_yaml("enabled: false\n").unwrap().enabled);
+        // 存进去也是 bool，不是字符串 "false"（后者在 YAML 里会被读成真值）
+        let text = Config::to_yaml(&Config {
+            enabled: false,
+            ..Config::default()
+        })
+        .unwrap();
+        assert!(text.contains("enabled: false"), "{text}");
     }
 
     #[test]

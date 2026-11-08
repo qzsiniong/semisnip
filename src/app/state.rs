@@ -154,7 +154,8 @@ impl AppState {
     ///
     /// 面板尺寸、显示详情这些**不用在这里处理**——面板窗口每次打开都是新建的，
     /// `ui::window::open` 会重新读 `config.panel_width/height`。这里只需管
-    /// 那些状态已经存在的：触发状态机、候选条数（影响当前列表）。
+    /// 那些状态已经存在的：触发状态机、候选条数（影响当前列表）、以及
+    /// 「启用触发」这个开关（它直接决定 tap 认不认触发串）。
     ///
     /// 触发串映射失败时**保留旧状态机**：设置窗口的输入框是逐字符落盘的，
     /// 用户打到一半的 `,` 不该让 `;;` 当场失灵。
@@ -164,6 +165,8 @@ impl AppState {
             Ok(trigger) => crate::trigger::tap::set_trigger(trigger),
             Err(err) => log::warn!("触发串 `{}` 未生效：{err}", config.trigger),
         }
+        // 暂停/恢复与触发串分开设：即使触发串此刻不合法，开关也该照样生效。
+        crate::trigger::tap::set_enabled(config.enabled);
         self.config = config;
         self.refilter_owned();
     }

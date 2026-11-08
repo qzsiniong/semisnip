@@ -89,7 +89,7 @@ pub fn run_daemon() {
             let trigger_config =
                 trigger::TriggerConfig::from_text(&config.trigger, config.trigger_timeout_ms)
                     .unwrap_or_default();
-            trigger::tap::install(tx.clone(), trigger_config);
+            trigger::tap::install(tx.clone(), trigger_config, config.enabled);
 
             app::scheduler::spawn(&mut cx.to_async(), state, rx, tx.clone());
 

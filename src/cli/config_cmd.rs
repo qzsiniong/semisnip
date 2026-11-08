@@ -19,6 +19,10 @@ use crate::trigger::machine::TriggerConfig;
 /// 字段顺序即展示顺序；说明同时用作 `config keys` 的输出。
 const FIELDS: &[(&str, &str)] = &[
     (
+        "enabled",
+        "是否接管触发串；false 时 `;;` 不弹面板，espanso 的降级触发仍可用",
+    ),
+    (
         "trigger",
         "开面板的触发串，ASCII，最多 4 个字符（如 \";;\"）",
     ),

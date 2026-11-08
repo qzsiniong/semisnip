@@ -236,13 +236,22 @@ fn handle(
             });
         }
 
-        // 设置窗口落盘之后投过来的：把新配置换进面板，并让触发状态机跟着换。
+        // 设置窗口/菜单栏落盘之后投过来的：把新配置换进面板，并让触发状态机跟着换。
         // 面板没开时也要处理——trigger 是全局的，下一次 `;;` 就得按新键码走。
         Event::ConfigChanged => {
+            let was_open = state.read(cx).open;
             state.update(cx, |state, cx| {
                 state.reload_config();
                 cx.notify();
             });
+            // 暂停的瞬间面板还开着的话立刻收起来：暂停的语义是「不再接管键盘」，
+            // 留一个开着的面板等于继续吞键，用户会以为开关没生效。
+            if !state.read(cx).config.enabled && was_open {
+                cancel(cx, state);
+            }
+            // 菜单文案与图标跟着 enabled 换。菜单栏是唯一不打开窗口就能看到
+            // 状态的地方，慢一拍都会让用户以为点了没反应。
+            crate::tray::sync(cx);
         }
 
         Event::Reload => {
