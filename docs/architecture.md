@@ -70,13 +70,15 @@ flowchart TB
 
 ## 回传顺序
 
-只有一种正确顺序，写在 `handoff::confirm` 里：
+只有一种正确顺序，写在 `handoff::confirm_with` 里（`confirm` 是它的生产薄包装，系统动作经 `Backend` trait 注入）：
 
 1. 面板 `orderOut`（由调用方先行关闭）
 2. 回删落进文档的触发符（`erase` 个——触发键不吞，它们真的在文档里）
 3. 打 `trigger_len` 个**占位空格**
 4. `espanso match exec -t <trigger>`——espanso 按 trigger 全长回删（TriggerCompensation），删掉的恰好是那串空格，然后注入展开文本
 5. 失败时：先退掉占位空格（IPC 没成功就没有补偿退格来收走它们），`allow_paste_fallback` 为真则安全渲染 + 剪贴板粘贴，否则只记日志
+
+这条序列有端到端模拟测试直接驱动（`sim_tests`，真状态机 + 真 `confirm_with` + 假 espanso / 假文档，不需要 espanso 与辅助功能授权），改坏顺序或时序假设会当场红。
 
 ```mermaid
 sequenceDiagram

@@ -26,6 +26,10 @@
 //! `keep_trigger`（把被吞的触发键补回文档），不吞键之后整个消失了——
 //! 如果哪天要恢复"吞键"设计，记得连同触发静默窗口一起，否则单字符触发串
 //! 会「补回 → 立即命中 → 面板又开」死循环。
+//!
+//! 序列本身抽在 [`confirm_with`] 里，系统动作经 [`Backend`] 注入：生产走
+//! [`RealBackend`]，端到端单测（`sim_tests`）走假后端——两路共用同一份顺序
+//! 逻辑，改坏顺序测试会当场红。
 
 pub mod inject;
 
@@ -35,8 +39,62 @@ use crate::config::Config;
 use crate::espanso::cli::EspansoCli;
 use crate::index::model::Hit;
 
+/// 回传序列里所有「要碰系统」的动作的抽象。
+///
+/// 抽出来只有一个目的：让 `confirm_with` 的**顺序逻辑**可以被端到端单测验证
+/// （见 `sim_tests`）——那套顺序（先删残留、再垫占位空格、失败先退空格再兜底）
+/// 是全项目最容易改坏的部分，而它依赖的三个系统服务（CGEvent 合成、espanso
+/// CLI、剪贴板）在测试进程里要么没权限要么不存在。
+///
+/// 实现约定：所有方法都是"发出去就算完成"，不做任何时序假设——补偿退格
+/// 什么时候到、属于哪一轮，是 espanso 的事（见模块注释）。
+pub trait Backend {
+    /// 回删 `count` 个字符。
+    fn backspace(&mut self, count: usize);
+    /// 打出 `count` 个占位空格。
+    fn type_spaces(&mut self, count: usize);
+    /// `espanso match exec -t <trigger>`。`Ok` 表示 espanso 已接管（它会自己
+    /// 按 trigger 全长补退格 + 注入展开文本）；`Err` 表示连 IPC 都没成功，
+    /// 不会有任何补偿退格到来——占位空格要自己收走。
+    fn exec_match(&mut self, trigger: &str) -> anyhow::Result<()>;
+    /// 把文本放进系统剪贴板（粘贴兜底第一步）。
+    fn set_clipboard(&mut self, text: &str) -> anyhow::Result<()>;
+    /// 合成 `Cmd+V`（粘贴兜底第二步）。
+    fn paste(&mut self);
+}
+
+/// 生产后端：CGEvent 合成键盘事件 + espanso CLI 子进程。
+///
+/// 无状态——每条命令起一个新进程（见 `EspansoCli`），事件合成自带 source，
+/// 会被 tap 的「外部事件一律放行」规则放行（见 `trigger::tap`）。
+pub struct RealBackend;
+
+impl Backend for RealBackend {
+    fn backspace(&mut self, count: usize) {
+        inject::backspace(count);
+    }
+
+    fn type_spaces(&mut self, count: usize) {
+        inject::type_spaces(count);
+    }
+
+    fn exec_match(&mut self, trigger: &str) -> anyhow::Result<()> {
+        EspansoCli::discover().exec(trigger)
+    }
+
+    fn set_clipboard(&mut self, text: &str) -> anyhow::Result<()> {
+        inject::set_clipboard(text)
+    }
+
+    fn paste(&mut self) {
+        inject::paste();
+    }
+}
+
 /// 一次回传的结局。只用于日志与降级判断，不驱动 UI（面板此时已经关了）。
-#[derive(Debug)]
+///
+/// `PartialEq` 给测试用（`sim_tests` 要断言结局）。
+#[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// espanso 已接管并展开。
     Expanded,
@@ -50,25 +108,40 @@ pub enum Outcome {
 ///
 /// 参数含义：
 /// - `hit`：选中的片段与**实际要展开的 trigger**（可能是第二个触发符）；
-/// - `erase`：文档里残留的触发符个数，来自状态机（tap 路径通常 1，单字符触发为 0）；
+/// - `erase`：文档里残留的触发符个数，来自状态机（触发串全长，见 `trigger::machine`；
+///   espanso 降级路径是降级触发串长度，菜单栏 / 手动唤起为 0）；
 /// - `config`：`post_exec_delay_ms` 与 `allow_paste_fallback` 在这里生效；
 /// - `fallback_text`：espanso 不可用时粘贴什么，由 `AppState::fallback_text` 提供。
+pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&str>) -> Outcome {
+    confirm_with(hit, erase, config, fallback_text, &mut RealBackend)
+}
+
+/// [`confirm`] 的可注入版本：逻辑完全相同，系统动作走 `backend`。
+///
+/// 单独存在的原因见 [`Backend`]。生产调用方一律走 [`confirm`]，这个函数只给
+/// 测试用——把它和 `confirm` 并排读，就是为了确认两条路的顺序一字不差。
 ///
 /// 失败路径的处理顺序值得注意：`match exec` 连 IPC 都没成功就不会有补偿退格，
 /// 占位空格原封不动留在文档里，要先退掉它们、再决定要不要粘贴。顺序反了会
 /// 在文档里留下一串空格。
-pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&str>) -> Outcome {
+pub fn confirm_with(
+    hit: &Hit,
+    erase: usize,
+    config: &Config,
+    fallback_text: Option<&str>,
+    backend: &mut dyn Backend,
+) -> Outcome {
     let trigger_len = hit.trigger.chars().count();
 
     // 1) 删掉文档里的触发符残留（触发键不吞，它们真的在文档里）。
     if erase > 0 {
-        inject::backspace(erase);
+        backend.backspace(erase);
     }
 
     // 2) 占位空格：给 espanso 的补偿退格预备恰好 trigger_len 个可删字符。
     //    详见模块注释——不要试图"吞掉"这些退格来省掉空格，时序上猜不准。
     if trigger_len > 0 {
-        inject::type_spaces(trigger_len);
+        backend.type_spaces(trigger_len);
     }
 
     log::info!("回传 {}：erase={erase} pad={trigger_len}", hit.trigger);
@@ -77,13 +150,12 @@ pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&
         std::thread::sleep(Duration::from_millis(config.post_exec_delay_ms));
     }
 
-    let cli = EspansoCli::discover();
-    match cli.exec(&hit.trigger) {
+    match backend.exec_match(&hit.trigger) {
         Ok(()) => Outcome::Expanded,
         Err(err) => {
             // IPC 都没成功，就没有补偿退格来收走占位空格：自己退掉。
             if trigger_len > 0 {
-                inject::backspace(trigger_len);
+                backend.backspace(trigger_len);
             }
             log::warn!("match exec 失败：{err}");
             if !config.allow_paste_fallback {
@@ -92,7 +164,7 @@ pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&
             let Some(text) = fallback_text.filter(|text| !text.trim().is_empty()) else {
                 return Outcome::Failed(err.to_string());
             };
-            match paste(text) {
+            match paste_with(backend, text) {
                 Ok(()) => Outcome::Pasted,
                 Err(paste_err) => {
                     log::error!("粘贴兜底也失败：{paste_err}");
@@ -110,10 +182,10 @@ pub fn confirm(hit: &Hit, erase: usize, config: &Config, fallback_text: Option<&
 /// 这个函数**不恢复**用户原来的剪贴板——恢复需要在粘贴完成后等待，而那段等待
 /// 无法可靠判定，反而会覆盖用户新复制的内容。这条路径只在 espanso 挂掉时走，
 /// 用户已经处于"降级"状态，能粘出东西比保住剪贴板更重要。
-fn paste(text: &str) -> anyhow::Result<()> {
-    inject::set_clipboard(text)?;
+fn paste_with(backend: &mut dyn Backend, text: &str) -> anyhow::Result<()> {
+    backend.set_clipboard(text)?;
     std::thread::sleep(Duration::from_millis(15));
-    inject::paste();
+    backend.paste();
     Ok(())
 }
 

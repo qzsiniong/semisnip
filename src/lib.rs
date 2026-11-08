@@ -28,6 +28,11 @@ pub mod trigger;
 pub mod ui;
 pub mod usage;
 
+/// 端到端模拟测试：进程内跑通「打字 → 触发 → 面板 → 确认 → 回传 → 展开」，
+/// 不依赖 espanso、不需要辅助功能授权。只在测试构建里编译，见模块文档。
+#[cfg(test)]
+mod sim_tests;
+
 use gpui_kit::AppContext as _;
 
 use crate::app::event::Event;
