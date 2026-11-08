@@ -17,8 +17,8 @@
 //!
 //! 1. **文档诚实**：触发串一个键都不吞；取消 = 纯关闭，零合成按键；
 //! 2. **确认回删有据**：回删数恰好等于文档里躺着的触发符个数；
-//! 3. **占位空格不受时序影响**：补偿退格无论何时到达（立即 / 下一轮 / 面板
-//!    开着时），删的都是恰好 `trigger_len` 个可丢弃空格——这是"espanso 原生
+//! 3. **占位串不受时序影响**：补偿退格无论何时到达（立即 / 下一轮 / 面板
+//!    开着时），删的都是恰好 `trigger_len` 个可丢弃字符——这是"espanso 原生
 //!    触发与面板确认交替使用互不干扰"（历史 bug）的回归防线；
 //! 4. **外部注入不进状态机**：展开文本里就算有一串 `;` 也不能误触发。
 //!
@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::cli::degraded_trigger;
-use crate::config::Config;
+use crate::config::{Config, Placeholder};
 use crate::handoff::{Backend, Outcome, confirm_with};
 use crate::index::model::{Body, Hit, Snippet, SourceRef};
 use crate::ipc::proto::Origin;
@@ -90,7 +90,7 @@ impl Doc {
 ///    模拟件天然满足"外部注入不进状态机"。
 /// 2. **match exec**（`exec_deferred`）：TriggerCompensation 按 trigger 全长
 ///    回删 + 注入展开文本。注入到达时机不可预估（shell 变量一跑几百毫秒），
-///    所以推进 `pending`，由测试决定何时 `settle`——这正是占位空格方案的靶心。
+///    所以推进 `pending`，由测试决定何时 `settle`——这正是占位串方案的靶心。
 struct FakeEspanso {
     /// daemon 挂掉：被动匹配不动作、`match exec` 失败（IPC 都不通）。
     dead: bool,
@@ -138,7 +138,7 @@ impl FakeEspanso {
         }
         // 降级匹配：命中 → 按 trigger 全长回删 → **只擦不注回**（`replace` 取的是
         // 被重定向掉的 stdout，见 `cli::render_match_file`），同时唤醒面板。
-        // 注回触发串会和面板的「回删 + 垫空格」抢光标，历史 bug 就是这么来的。
+        // 注回触发串会和面板的「回删 + 垫占位串」抢光标，历史 bug 就是这么来的。
         if doc.ends_with(&self.degraded) {
             doc.backspace(self.degraded.chars().count());
             self.opened.push(Origin::EspansoShell);
@@ -187,8 +187,8 @@ struct PanelState {
 enum Action {
     /// 合成退格。
     Backspace(usize),
-    /// 合成占位空格。
-    Spaces(usize),
+    /// 合成了占位串（内容按 `Config::placeholder` 生成，见 `handoff::placeholder_text`）。
+    Placeholder(String),
     /// 调了 `match exec`。
     Exec(String),
     /// 写了剪贴板。
@@ -343,11 +343,11 @@ impl Backend for SimBackend<'_> {
         self.injected.push(Action::Backspace(count));
     }
 
-    fn type_spaces(&mut self, count: usize) {
-        for _ in 0..count {
-            self.doc.type_char(' ');
+    fn type_placeholder(&mut self, text: &str) {
+        for c in text.chars() {
+            self.doc.type_char(c);
         }
-        self.injected.push(Action::Spaces(count));
+        self.injected.push(Action::Placeholder(text.to_string()));
     }
 
     fn exec_match(&mut self, trigger: &str) -> anyhow::Result<()> {
@@ -415,7 +415,7 @@ fn config(allow_paste_fallback: bool) -> Config {
 // 场景
 // ---------------------------------------------------------------------------
 
-/// tap 在线的完整正路：`;;` 触发 → 确认 → 占位空格 → 展开。
+/// tap 在线的完整正路：`;;` 触发 → 确认 → 占位串 → 展开。
 ///
 /// 逐步断言文档：触发串留在文档里 → 确认回删后垫上空格 → 结算后拿到
 /// 干净的展开文本。这是整条链路的基准场景。
@@ -430,27 +430,84 @@ fn tap_path_full_flow_expands_cleanly() {
     assert_eq!(sim.text(), "hello ;;", "触发串一个键都不吞");
     assert!(sim.panel.is_some(), "命中后面板必须打开");
 
-    // 确认：回删 2 个触发符 → 垫 2 个占位空格 → match exec。
+    // 确认：回删 2 个触发符 → 垫 2 个占位串 → match exec。
     let outcome = sim.confirm_hit(&hit_sh(), &config(true), None);
     assert_eq!(outcome, Outcome::Expanded);
     assert_eq!(
         sim.text(),
         "hello   ",
-        "回删后光标前只剩原文与占位空格（慢展开期间可见空格是已知限制）"
+        "回删后光标前只剩原文与占位串（慢展开期间可见空格是已知限制）"
     );
     assert_eq!(
         sim.injected,
         vec![
             Action::Backspace(2),
-            Action::Spaces(2),
+            Action::Placeholder("  ".into()),
             Action::Exec("sh".into()),
         ],
-        "confirm 序列必须严格是：回删残留 → 垫空格 → match exec"
+        "confirm 序列必须严格是：回删残留 → 垫占位串 → match exec"
     );
 
     // 补偿退格到达：删掉恰好那 2 个空格，注入展开文本。
     sim.settle();
     assert_eq!(sim.text(), "hello SH-OK;", "结算后文档必须干净、无空格残留");
+}
+
+/// 换占位字符不改变链路：零宽占位同样被补偿退格精确收走。
+///
+/// 这条守的是「占位符可配置」的契约：`placeholder` 只决定**垫什么字符**，
+/// 长度与顺序都不能变——espanso 的退格数是由片段 trigger 长度决定的，与内容无关。
+#[test]
+fn zero_width_placeholder_is_consumed_the_same_way() {
+    let mut sim = Sim::new(true);
+    sim.type_text("hi ;;");
+    assert!(sim.panel.is_some());
+
+    let config = Config {
+        placeholder: Placeholder::ZeroWidth,
+        ..config(true)
+    };
+    assert_eq!(sim.confirm_hit(&hit_sh(), &config, None), Outcome::Expanded);
+
+    // 确认当刻：零宽字符看不见，但确实在文档里，且个数等于触发串长度。
+    assert_eq!(sim.text(), "hi \u{200b}\u{200b}", "占位串长度必须精确");
+    assert_eq!(
+        sim.injected,
+        vec![
+            Action::Backspace(2),
+            Action::Placeholder("\u{200b}\u{200b}".into()),
+            Action::Exec("sh".into()),
+        ]
+    );
+
+    sim.settle();
+    assert_eq!(sim.text(), "hi SH-OK;", "补偿退格必须把零宽字符也删干净");
+}
+
+/// `placeholder = trigger`：把触发串打出去，**不**调 `match exec`。
+///
+/// 这条守的是"不能双重展开"：espanso 只跳过自己注入的事件，我们打出去的触发串
+/// 会被它当成真实输入再命中一次；如果此时还调 `match exec`，同一段文字会展开
+/// 两遍。sim 里没有 espanso 的被动匹配，所以断言落在"没有 Exec 这一步"上。
+#[test]
+fn trigger_placeholder_delegates_instead_of_calling_match_exec() {
+    let mut sim = Sim::new(true);
+    sim.type_text("hello ;;");
+    assert!(sim.panel.is_some());
+
+    let config = Config {
+        placeholder: Placeholder::Trigger,
+        ..config(true)
+    };
+    let outcome = sim.confirm_hit(&hit_sh(), &config, None);
+    assert_eq!(outcome, Outcome::Delegated, "这条路交给 espanso 自己命中");
+
+    assert_eq!(sim.text(), "hello sh", "触发串必须原样打进文档");
+    assert_eq!(
+        sim.injected,
+        vec![Action::Backspace(2), Action::Placeholder("sh".into()),],
+        "只回删面板触发串 + 打出片段触发串；绝不能出现 Exec"
+    );
 }
 
 /// 取消是纯关闭：文档保持诚实，零合成按键，状态机无残留。
@@ -504,8 +561,8 @@ fn native_espanso_and_panel_interleave_without_interference() {
     assert_eq!(sim.text(), "a console.log();   ");
 
     // 慢展开尚未到达时，用户继续打第 3 轮的原生触发 `:shell`。
-    // 先结算：补偿退格删的是占位空格，不是 `:shell` 的任何字符——
-    // 这就是占位空格方案对"时序不可预估"的全部依赖。
+    // 先结算：补偿退格删的是占位串，不是 `:shell` 的任何字符——
+    // 这就是占位串方案对"时序不可预估"的全部依赖。
     sim.settle();
     assert_eq!(sim.text(), "a console.log(); SH-OK;");
     // 外部注入（含文本里的 `;`）不进状态机：机器没有半截触发序列。
@@ -520,7 +577,7 @@ fn native_espanso_and_panel_interleave_without_interference() {
 }
 
 /// 无辅助功能授权（tap 离线）的降级正路：`;;;` 被 espanso 擦掉（不注回任何东西）
-/// 并唤醒面板；文档里已经没有触发符，所以 `erase = 0`，确认序列只剩「垫空格 +
+/// 并唤醒面板；文档里已经没有触发符，所以 `erase = 0`，确认序列只剩「垫占位串 +
 /// match exec」——与 tap 路只差一个 `erase`。
 #[test]
 fn degraded_path_without_accessibility() {
@@ -540,14 +597,14 @@ fn degraded_path_without_accessibility() {
 
     let outcome = sim.confirm_hit(&hit_sh(), &config(true), None);
     assert_eq!(outcome, Outcome::Expanded);
-    // 确认当刻：垫了 trigger_len 个占位空格，等 espanso 的补偿退格来收。
+    // 确认当刻：垫了 trigger_len 个占位串，等 espanso 的补偿退格来收。
     assert_eq!(sim.text(), "hi   ");
     sim.settle();
     assert_eq!(sim.text(), "hi SH-OK;");
     assert_eq!(
         sim.injected,
-        vec![Action::Spaces(2), Action::Exec("sh".into())],
-        "没有触发符可回删，序列从垫空格开始"
+        vec![Action::Placeholder("  ".into()), Action::Exec("sh".into())],
+        "没有触发符可回删，序列从垫占位串开始"
     );
 }
 
@@ -561,7 +618,7 @@ fn degraded_path_without_accessibility() {
 /// 又多删两个字符。
 ///
 /// 修法方向：让 CLI 在 tap 可用（daemon `status` 为真）时把触发串原样交回
-/// `replace`（净零，且不再开面板）。难点是那段交回的注入会与面板的垫空格共用
+/// `replace`（净零，且不再开面板）。难点是那段交回的注入会与面板的垫占位串共用
 /// 光标——正是 `cli::render_match_file` 注释里记着的老坑，得连时序一起设计。
 /// 修好后这条测试要改成断言文档完全不动。
 #[test]
@@ -612,7 +669,7 @@ fn external_injection_passes_through_while_panel_open() {
     assert_eq!(sim.text(), "x ;;[晚到]");
 }
 
-/// espanso daemon 挂掉：exec 失败后必须先自己收走占位空格，再走（或不走）
+/// espanso daemon 挂掉：exec 失败后必须先自己收走占位串，再走（或不走）
 /// 粘贴兜底。三种兜底配置逐一断言文档终态。
 #[test]
 fn exec_failure_reclaims_pads_and_falls_back() {
@@ -622,12 +679,12 @@ fn exec_failure_reclaims_pads_and_falls_back() {
     sim.type_text("hi ;;");
     let outcome = sim.confirm_hit(&hit_sh(), &config(false), None);
     assert!(matches!(outcome, Outcome::Failed(_)));
-    assert_eq!(sim.text(), "hi ", "失败路径不留触发符也不留占位空格");
+    assert_eq!(sim.text(), "hi ", "失败路径不留触发符也不留占位串");
     assert_eq!(
         sim.injected,
         vec![
             Action::Backspace(2),
-            Action::Spaces(2),
+            Action::Placeholder("  ".into()),
             Action::Exec("sh".into()),
             Action::Backspace(2),
         ],
@@ -645,13 +702,13 @@ fn exec_failure_reclaims_pads_and_falls_back() {
         sim.injected,
         vec![
             Action::Backspace(2),
-            Action::Spaces(2),
+            Action::Placeholder("  ".into()),
             Action::Exec("sh".into()),
             Action::Backspace(2),
             Action::Clipboard("FALLBACK".into()),
             Action::Paste,
         ],
-        "粘贴兜底 = 先收空格，再剪贴板 + Cmd+V"
+        "粘贴兜底 = 先收占位串，再剪贴板 + Cmd+V"
     );
 
     // ③ 兜底开启但无兜底文本（空片段）：同样 Failed，文档干净。

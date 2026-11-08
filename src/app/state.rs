@@ -404,6 +404,11 @@ pub fn run_confirm(hit: Hit, erase: usize, config: Config, fallback: Option<Stri
             let outcome = handoff::confirm(&hit, erase, &config, fallback.as_deref());
             match outcome {
                 handoff::Outcome::Expanded => log::info!("已交给 espanso 展开：{}", hit.trigger),
+                handoff::Outcome::Delegated => {
+                    // 这一刻触发串已经打进文档，剩下的全看 espanso 的被动匹配：
+                    // 它没在跑、或片段被 app-specific 配置禁用，文档里就会留着触发串。
+                    log::info!("已打出触发串，等 espanso 自己命中：{}", hit.trigger);
+                }
                 handoff::Outcome::Pasted => log::warn!("espanso 不可用，已用粘贴兜底"),
                 handoff::Outcome::Failed(err) => log::error!("展开失败：{err}"),
             }

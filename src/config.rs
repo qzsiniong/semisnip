@@ -63,6 +63,33 @@ pub enum Position {
     Center,
 }
 
+/// 确认回传时用什么字符「占位」。
+///
+/// 为什么需要占位：`espanso match exec` 一定会先按**被选中片段 trigger 的字符数**
+/// 发一串退格（`TriggerCompensation`，见 `espanso-engine` 的 `action.rs`），
+/// 且没有关闭入口。这些退格删的是光标左边的字符，所以必须提前放好同样多的
+/// 「一退格一个」的字符，否则被删的就是用户正文。
+///
+/// 各种选择的差别只在于「那串字符会不会被目标 App 或 espanso 改写」，详见
+/// `docs/troubleshooting.md#占位符展开时文档里为什么会多出几个字符`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placeholder {
+    /// 空格（默认）：最不起眼，但属于「有语义的空白」，少数场景会被改写。
+    #[default]
+    Space,
+    /// 零宽空格 U+200B：不可见、不是 Unicode 空白，不会被 tab 化/trim。
+    ZeroWidth,
+    /// 用被选中片段自己的触发串：打出去之后**不再调 `match exec`**，交给
+    /// espanso 的被动匹配自己命中、自己回删、自己展开（详见 `handoff::confirm_with`）。
+    Trigger,
+    /// 用户指定的单个字符，见 [`Config::placeholder_char`]。
+    Custom,
+    /// 一个字都不补。**只有将来 espanso 提供「不补偿」入口时才安全**，
+    /// 现在选它等于每次展开都会吃掉光标前的真实字符。
+    None,
+}
+
 /// 全部偏好。
 ///
 /// `#[serde(default)]` 放在结构体上而不是逐字段：这样**任何**字段缺失（用户
@@ -83,6 +110,14 @@ pub struct Config {
     pub panel_height: f32,
     /// 面板关闭到 `match exec` 之间的等待；非激活模式下可接近 0。
     pub post_exec_delay_ms: u64,
+    /// 回传时的占位符策略，见 [`Placeholder`]。
+    pub placeholder: Placeholder,
+    /// [`Placeholder::Custom`] 用的字符：必须**恰好一个字符**（一个 Unicode 标量），
+    /// 且不能是控制字符（换行/制表会引发自动缩进、数量对不上）。
+    ///
+    /// 存 `String` 而不是 `char`：YAML 里没有字符类型，serde 对 `char` 的支持
+    /// 也只在单字符时可用；存字符串、校验时再数长度，报错信息更好写。
+    pub placeholder_char: String,
     /// 详情区是否展示剪贴板内容（默认只显示长度）。
     pub preview_clipboard: bool,
     pub show_detail: bool,
@@ -111,6 +146,8 @@ impl Default for Config {
             panel_width: 720.0,
             panel_height: 420.0,
             post_exec_delay_ms: 12,
+            placeholder: Placeholder::Space,
+            placeholder_char: "·".into(),
             preview_clipboard: false,
             show_detail: true,
             allow_paste_fallback: true,
@@ -199,6 +236,35 @@ impl Config {
         }
         Some(cfg)
     }
+}
+
+/// 校验 [`Placeholder::Custom`] 的字符，返回它本身。
+///
+/// 规则只有两条，但都必须卡住：
+/// - **恰好一个字符**：espanso 会按「字符数」发退格，一个 emoji 组合（多个标量）
+///   占多个字符位，数量就会对不上；
+/// - **不能是控制字符**：换行会触发编辑器的自动缩进（凭空多出空格），制表符在
+///   代码编辑器里会被展开成若干空格——两种情况都会让退格数错位。
+///
+/// 抽成自由函数是为了让 `config set` 与设置窗口共用同一套文案，别各写一遍。
+pub fn validate_placeholder_char(text: &str) -> Result<char, String> {
+    let mut chars = text.chars();
+    let Some(c) = chars.next() else {
+        return Err("占位字符不能为空".into());
+    };
+    if chars.next().is_some() {
+        return Err(format!(
+            "占位字符必须是单个字符，收到 {} 个（一个 emoji 组合也算多个）",
+            text.chars().count()
+        ));
+    }
+    if c.is_control() {
+        return Err(
+            "占位字符不能是换行 / 制表符等控制字符：它们会让编辑器自动缩进，退格数就对不上了"
+                .into(),
+        );
+    }
+    Ok(c)
 }
 
 /// 只有空白与注释的 YAML 视为「没写」。
@@ -334,6 +400,64 @@ mod tests {
 
         let text = std::fs::read_to_string(&yml).unwrap();
         assert!(text.starts_with("# semisnip 配置"));
+    }
+
+    #[test]
+    fn placeholder_settings_round_trip() {
+        // 默认是空格：不写这两个键的老配置必须原样按默认值跑。
+        let default = Config::from_yaml("trigger: \"<<\"\n").unwrap();
+        assert_eq!(default.placeholder, Placeholder::Space);
+        assert_eq!(default.placeholder_char, "·");
+
+        let config =
+            Config::from_yaml("placeholder: zero_width\nplaceholder_char: \"▪\"\n").unwrap();
+        assert_eq!(config.placeholder, Placeholder::ZeroWidth);
+        assert_eq!(config.placeholder_char, "▪");
+
+        // 五个取值都要能解析，拼错则整份失败（而不是悄悄退回默认值）
+        for (text, want) in [
+            ("space", Placeholder::Space),
+            ("zero_width", Placeholder::ZeroWidth),
+            ("trigger", Placeholder::Trigger),
+            ("custom", Placeholder::Custom),
+            ("none", Placeholder::None),
+        ] {
+            let yaml = format!("placeholder: {text}\n");
+            assert_eq!(Config::from_yaml(&yaml).unwrap().placeholder, want);
+        }
+        assert!(Config::from_yaml("placeholder: tab\n").is_err());
+    }
+
+    #[test]
+    fn placeholder_char_must_be_one_visible_character() {
+        assert_eq!(validate_placeholder_char("·"), Ok('·'));
+        assert_eq!(validate_placeholder_char("\u{200b}"), Ok('\u{200b}'));
+        // 汉字、全角标点都是单字符，允许
+        assert_eq!(validate_placeholder_char("。"), Ok('。'));
+
+        assert!(
+            validate_placeholder_char("")
+                .unwrap_err()
+                .contains("不能为空")
+        );
+        assert!(
+            validate_placeholder_char("ab")
+                .unwrap_err()
+                .contains("单个字符")
+        );
+        // 组合 emoji：一个字形、多个标量 → 数量对不上，必须拒
+        assert!(validate_placeholder_char("👨‍👩‍👦").is_err());
+        // 换行 / 制表：会改变编辑器行为
+        assert!(
+            validate_placeholder_char("\n")
+                .unwrap_err()
+                .contains("控制字符")
+        );
+        assert!(
+            validate_placeholder_char("\t")
+                .unwrap_err()
+                .contains("控制字符")
+        );
     }
 
     #[test]

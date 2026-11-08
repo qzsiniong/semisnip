@@ -69,6 +69,21 @@
       "minimum": 0,
       "maximum": 1000
     },
+    "placeholder": {
+      "title": "占位符",
+      "description": "回传时用哪种字符给 espanso 的补偿退格「占位」。espanso 每次都会按片段 trigger 的字符数发退格且无法关闭，所以必须提前放好同样多的字符。space：空格（默认）；zero_width：零宽空格 U+200B，不可见、不会被 tab 化或 trim；trigger：用片段触发串（顺序会错开一位，避免 espanso 二次命中）；custom：用 placeholder_char；none：一个字都不补，只在 espanso 支持关闭补偿后才安全。详见 troubleshooting.md。",
+      "type": "string",
+      "default": "space",
+      "enum": ["space", "zero_width", "trigger", "custom", "none"]
+    },
+    "placeholder_char": {
+      "title": "自定义占位字符",
+      "description": "placeholder = custom 时使用，必须恰好一个字符，且不能是换行 / 制表符等控制字符（会触发编辑器自动缩进，退格数就对不上）。",
+      "type": "string",
+      "default": "·",
+      "minLength": 1,
+      "maxLength": 1
+    },
     "preview_clipboard": {
       "title": "预览剪贴板",
       "description": "详情区是否显示剪贴板全文。false 时只显示字符数——剪贴板里可能是密码。",

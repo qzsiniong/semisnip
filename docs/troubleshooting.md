@@ -34,6 +34,56 @@ semisnip log -f               # 复现问题时盯着
 | 改了辅助功能还是显示未授权 | 授权只影响「之后创建」的 tap；不过 daemon 每秒会对齐一次状态、每 5 秒重试一次安装，所以多数情况几秒后自己就好了 | 等两秒；还不行就点面板上的「重新检查」。真卡住才需要 `launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon` |
 | 菜单栏看不到图标 | 菜单栏排满，被折叠进溢出区 | 见 [菜单栏与图标 · 图标没出现？](tray.md#图标没出现) |
 
+## 占位符：展开时文档里为什么会多出几个字符
+
+**这是 espanso 的限制，不是 semisnip 的选择。** espanso 在注入展开内容前，一定会按
+**被选中片段 trigger 的字符数**发一串退格（`TriggerCompensation`，实现在
+`espanso-engine/src/process/middleware/action.rs`：`backspace_count = trigger.chars().count()`），
+而且没有关闭入口——`espanso match exec` 也会走这条路。
+
+那些退格删的是**光标左边**的字符，可 semisnip 确认时文档里只有用户正文。所以必须在
+调用 `match exec` 之前，先打出同样多的「一退格删一个」的字符垫在那里，让退格把它们
+收走。垫什么字符由 `placeholder` 决定（设置 → 行为 → 占位字符）：
+
+| 取值 | 打出去的东西 | 适合 | 坑 |
+|---|---|---|---|
+| `space`（默认） | `trigger_len` 个空格 | 绝大多数场景 | 空格是「有语义的空白」：行首连续空格可能被编辑器 tab 化、行尾空白可能被 trim、输入法组合态下空格是上屏键、有些编辑器把空格当自动补全的接受键——任何一种都会让字符数变少，补偿退格就会多吃正文 |
+| `zero_width` | `trigger_len` 个 U+200B | 编辑器会改写空格时 | 不可见、不是 Unicode 空白（`trim` / `\s` 收不走）、不会被 tab 化；代价是个别 App 会过滤零宽字符，那样同样会少字符 |
+| `trigger` | 片段触发串本身 | 想让「删掉的东西就是 espanso 认识的东西」 | **这条不调 `match exec`**，见下 |
+| `custom` | `placeholder_char` 重复 | 上面都不合适时 | 必须恰好一个字符、且不能是换行/制表符（会触发自动缩进，数量就错了） |
+| `none` | 什么都不打 | 只在 espanso 将来支持关闭补偿后 | **现在选它等于每次展开吃掉光标前 `trigger_len` 个真实字符** |
+
+### `placeholder: trigger` 为什么不能调 `match exec`
+
+espanso 的检测器只跳过**自己**注入的事件——`espanso-detect/src/mac/native.mm` 里把
+`ESPANSO_EVENT_MARKER`（`-27469`）塞在事件坐标里做标记。semisnip 合成的按键在它
+眼里和真键盘没区别，所以把片段触发串打出去的那一刻，espanso 的被动匹配就会自己命中、
+自己按 trigger 全长回删、自己注入。
+
+这套动作与 `match exec` 触发的补偿完全等价。**如果此时再调一次 `match exec`，同一段
+文字会被展开两遍**（第二轮的补偿还会吃掉第一轮的展开结果）。所以这条模式下 semisnip
+打完触发串就收工，返回 `Delegated`。
+
+代价，选它之前想清楚：
+
+- **成败不可知**。espanso 没在跑、或该片段被 app-specific 配置禁用，触发串就会留在
+  文档里，semisnip 只能记日志（`已打出触发串，等 espanso 自己命中`），看不到结果。
+- **触发串含非 ASCII 字符时会自动退回空格模式**（日志里有一条 warn）。semisnip 打非 ASCII 走的是 unicode 注入（键码为 0），espanso 未必认得出这是"用户打的字"：认不出，触发串就留在文档里；认得出，又会和 `match exec` 双打。所以这条模式下只委托纯 ASCII 触发串。
+- 这串按键也会经过 semisnip 自己的键盘 tap（和其他合成事件一样），所以片段触发串里
+  别包含面板触发串（例如面板是 `;;`、片段触发串以 `;;` 结尾会把面板又叫出来）。
+
+### 怎么切、怎么查
+
+```bash
+semisnip config set placeholder zero_width     # 立刻写盘，重启 daemon 生效
+semisnip config set placeholder custom
+semisnip config set placeholder_char "·"       # 必须单个字符、非控制字符
+```
+
+设置窗口里改是立即生效的。日志里每次回传都有一行
+`回传 <trigger>：erase=… pad=… placeholder=…`，`pad` 就是这次垫了多少个字符——
+它应该恒等于片段触发串的字符数。
+
 ## 已知限制
 
 - **非激活面板拿不到 IME 会话**。过滤走的是物理键码映射，所以不能用输入法打中文过滤词；中文标签靠拼音全拼/首字母索引弥补。真要输入法，需要 `focus_mode = "activating"`，该分支目前只是配置预留，未实现（还需要补「还原前台 + 等待」的折返）。
@@ -41,7 +91,7 @@ semisnip log -f               # 复现问题时盯着
 - **降级路径取消面板不会补回 `;;;`**。espanso 命中降级匹配时会立刻按 trigger 全长回删，`;;;` 在你按第三个键的那一刻就没了；semisnip 全程没见过它，也就补不出来。tap 路径没有这个问题（触发键从不被吞）。降级匹配**不**把触发串注回文档，是因为注回会和面板的回删/垫空格抢光标——那个 bug 的表现是"文档多出 `;;;`、正文被删"（见 [架构 · 两条回传协议](architecture.md#两条回传协议)）。
 - **降级路径的面板会晚约 150ms 出现**。espanso 的回删要等 shell 变量（`semisnip trigger`）退出才发，面板等这段时间过去再开，避免用户在回删落地前按回车、两家抢同一个光标。这是刻意的延迟，不是卡顿。
 - **`match exec` 无回执**，失败只能看日志；粘贴兜底会覆盖剪贴板。
-- **慢片段展开期间能看到占位空格**。回传用 `trigger_len` 个空格给 espanso 的补偿退格"占位"（见 [架构 · 回传顺序](architecture.md#回传顺序)），shell 变量跑几百毫秒时这几格空格肉眼可见、随后被收走。这期间**不要按退格**——会自己吃掉空格，让补偿退格多删字符。
+- **慢片段展开期间能看到占位符**。回传会先打出 `trigger_len` 个占位字符给 espanso 的补偿退格（见上方 [占位符](#占位符展开时文档里为什么会多出几个字符)），shell 变量跑几百毫秒时这几格肉眼可见、随后被收走；嫌碍眼就换成 `zero_width`。这期间**不要按退格**——会自己吃掉占位字符，让补偿退格多删真实字符。
 - **app-specific 过滤规则未复刻**，`filter_class` / `filter_exec` 场景下的候选可能比 espanso 原生搜索框多。
 - **中文输入法下触发串可能变成全角**。`；；` 与 ASCII `;;` 不是同一个字符串——不过触发键不吞，两个全角分号都会照常落进文档，取消/展开都不会额外吃字；只是 semisnip 的触发判定认物理键码，全角键位未必映射得上，触发不了时切到英文输入法最稳。
 - **仅 macOS**。

@@ -1,8 +1,10 @@
-//! 需要合成键盘事件的几处：回删残留触发符、给补偿退格的占位空格、
+//! 需要合成键盘事件的几处：回删残留触发符、打出给补偿退格删的占位串、
 //! `match exec` 失败时的粘贴兜底。
 //!
 //! 都在后台线程调用；合成事件带自己的 source pid，会被 tap 的
-//! "自己人"判断放行（见 `trigger::tap`）。
+//! "自己人"判断放行（见 `trigger::tap`）。注意：**espanso 也会把这些事件当成
+//! 真实输入**——它只跳过自己注入的事件（见 `docs/troubleshooting.md`），
+//! 所以占位串的内容不能长得像任何触发串。
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -25,6 +27,9 @@ mod imp {
         fn CGEventSetFlags(event: CGEventRef, flags: u64);
         fn CGEventPost(tap: u32, event: CGEventRef);
         fn CGEventSourceCreate(state: i32) -> *mut c_void;
+        /// 把一个 UTF-16 串塞进键盘事件：App 会像"输入法上屏"那样直接插入这段文本，
+        /// 不经过物理键码映射。零宽字符、全角字符只能走这条路（`keymap` 里没有它们）。
+        fn CGEventKeyboardSetUnicodeString(event: CGEventRef, len: usize, text: *const u16);
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -67,16 +72,51 @@ mod imp {
         }
     }
 
-    /// 打出 `count` 个空格作为占位。
+    /// 打出占位串，给 espanso 的补偿退格删（内容由 `handoff::placeholder_text`
+    /// 按 `config::Placeholder` 生成）。
     ///
-    /// `match exec` 时 espanso 会按 trigger 全长回删（TriggerCompensation），
-    /// 这些空格就是给它删的：文档里恰好有 `trigger_len` 个可丢弃字符，
-    /// 补偿退格无论何时到达，删的都是空白而不是用户文本（见 `handoff::confirm`）。
-    pub fn type_spaces(count: usize) {
-        for _ in 0..count {
-            press(crate::trigger::keymap::SPACE as u16, 0);
-            std::thread::sleep(std::time::Duration::from_millis(1));
+    /// 两条注入通道，按内容选：
+    /// - **纯 ASCII 可打印** → 物理键码（[`type_text`]）。这条路在终端、编辑器里
+    ///   都验证过；而且目标 App 收到的是"真按键"，对只监听按键事件的程序更友好。
+    /// - **其它**（零宽字符、全角字符、自定义字符）→ unicode 注入。
+    ///   物理键码表里根本没有这些字符，只能走 unicode。
+    pub fn type_placeholder(text: &str) {
+        if text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+            type_text(text);
+        } else {
+            type_unicode(text);
         }
+    }
+
+    /// 用 `CGEventKeyboardSetUnicodeString` 直接插入一段文本。
+    ///
+    /// keycode 固定 0：字符全由 unicode 串给出，物理键码只是为了构造一个合法事件。
+    /// keyDown 与 keyUp **都要**带上同一串——只给 keyDown 时，有的 App 会把 keyUp
+    /// 的 keycode 0 当成一次额外的 `a` 输入。
+    ///
+    /// 8ms 等待与 [`type_text`] 同源：给 App / 输入法留处理时间。整串一次投递，
+    /// 不需要逐字符 sleep（补偿退格要等 `match exec` 返回后才来，时间足够）。
+    fn type_unicode(text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        unsafe {
+            let source = CGEventSourceCreate(HID_STATE);
+            for down in [true, false] {
+                let event = CGEventCreateKeyboardEvent(source, 0, down);
+                if event.is_null() {
+                    continue;
+                }
+                CGEventKeyboardSetUnicodeString(event, utf16.len(), utf16.as_ptr());
+                CGEventPost(SESSION_TAP, event);
+                CFRelease(event);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
     }
 
     /// 合成一个命名按键（调试用）。
@@ -92,8 +132,8 @@ mod imp {
         press(code as u16, 0);
     }
 
-    /// 逐字符合成输入：取消面板时补回触发词尾巴，以及 `semisnip type`
-    /// （无辅助功能权限时的冒烟测试）。
+    /// 逐字符合成输入：`semisnip type`（无辅助功能权限时的冒烟测试）与
+    /// ASCII 占位串（空格 / 片段触发串 / ASCII 自定义字符）。
     ///
     /// 只映射 ASCII（`keymap::keycode_and_shift` 的边界）——触发串本来就只允许
     /// ASCII，所以这条限制在这里不会漏字符。8ms 的间隔是给目标 App 的输入法留的
@@ -121,7 +161,7 @@ mod imp {
     //! 走 espanso 自己的触发，没有合成键盘事件的能力。
     pub fn backspace(_count: usize) {}
     /// 空实现：见上面的模块说明。
-    pub fn type_spaces(_count: usize) {}
+    pub fn type_placeholder(_text: &str) {}
     /// 空实现。
     pub fn paste() {}
     /// 空实现。
@@ -130,7 +170,7 @@ mod imp {
     pub fn press_named(_name: &str) {}
 }
 
-pub use imp::{backspace, paste, press_named, type_spaces, type_text};
+pub use imp::{backspace, paste, press_named, type_placeholder, type_text};
 
 /// 把文本放进系统剪贴板（macOS 用 `pbcopy`，省一个 crate）。
 pub fn set_clipboard(text: &str) -> anyhow::Result<()> {

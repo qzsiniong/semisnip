@@ -39,6 +39,14 @@ const FIELDS: &[(&str, &str)] = &[
         "面板关闭到 match exec 之间的等待，单位毫秒",
     ),
     (
+        "placeholder",
+        "占位符：space（空格）｜zero_width（零宽）｜trigger（片段触发串）｜custom（自定义字符）｜none（不补，危险）",
+    ),
+    (
+        "placeholder_char",
+        "placeholder=custom 时用的字符，必须恰好一个、且不是控制字符",
+    ),
+    (
         "preview_clipboard",
         "详情区是否显示剪贴板内容（只显示长度，不显示全文）",
     ),
@@ -385,6 +393,19 @@ fn validate(key: &str, value: Value) -> Result<Value, String> {
             Some("nonactivating") | Some("activating") => Ok(value),
             _ => Err("focus_mode 只接受 nonactivating / activating".into()),
         },
+        "placeholder" => match value.as_str() {
+            Some("space" | "zero_width" | "trigger" | "custom" | "none") => Ok(value),
+            _ => Err(
+                "placeholder 只接受 space / zero_width / trigger / custom / none（详见 troubleshooting.md）"
+                    .into(),
+            ),
+        },
+        "placeholder_char" => {
+            // 规则只有一处：`config.rs` 里的 `validate_placeholder_char`，
+            // 设置窗口与这里共用，避免两套文案说着不一样的话。
+            crate::config::validate_placeholder_char(value.as_str().unwrap_or_default())?;
+            Ok(value)
+        }
         _ => Ok(value),
     }
 }
@@ -457,6 +478,13 @@ mod tests {
         assert!(validate("panel_width", Value::from(-10.0)).is_err());
         assert!(validate("focus_mode", Value::String("activating".into())).is_ok());
         assert!(validate("focus_mode", Value::String("whatever".into())).is_err());
+        // 占位符：五个取值 + 自定义字符的两个硬约束
+        assert!(validate("placeholder", Value::String("zero_width".into())).is_ok());
+        assert!(validate("placeholder", Value::String("none".into())).is_ok());
+        assert!(validate("placeholder", Value::String("tab".into())).is_err());
+        assert!(validate("placeholder_char", Value::String("·".into())).is_ok());
+        assert!(validate("placeholder_char", Value::String("ab".into())).is_err());
+        assert!(validate("placeholder_char", Value::String("\t".into())).is_err());
     }
 
     #[test]

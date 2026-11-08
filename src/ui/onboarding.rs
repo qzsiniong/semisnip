@@ -159,11 +159,17 @@ impl OnboardingState {
 /// 与设置窗口同一套模式：先 `set_global` 再 `open_window`（第一帧渲染就要读全局），
 /// 最后 `activate(true)` 把窗口提到前面——daemon 是 Accessory 应用，
 /// 不激活的话用户会以为引导没弹出来。
+///
+/// 「已开着」这个分支也必须**先激活 App 再立窗口**：只调 `activate_window()`
+/// 时窗口只是在后台 App 的窗口堆里变成 key，用户看到的还是"点了没反应"。
 pub fn open(cx: &mut App) -> anyhow::Result<()> {
     if let Some(entity) = cx.try_global::<GlobalOnboarding>().map(|g| g.0.clone()) {
         if let Some(handle) = entity.read(cx).handle {
             if handle
-                .update(cx, |_, window, _| window.activate_window())
+                .update(cx, |_, window, cx| {
+                    cx.activate(true);
+                    window.activate_window();
+                })
                 .is_ok()
             {
                 return Ok(());

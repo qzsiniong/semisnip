@@ -32,6 +32,8 @@ position: auto
 panel_width: 720.0
 panel_height: 420.0
 post_exec_delay_ms: 12
+placeholder: space
+placeholder_char: ·
 preview_clipboard: false
 show_detail: true
 allow_paste_fallback: true
@@ -76,6 +78,8 @@ semisnip config schema
 | `position` | `"auto"` | `auto` 贴着输入光标；`center` 屏幕可视区居中。两者都跟随光标 / 当前窗口所在的那块屏 |
 | `panel_width` / `panel_height` | `720` / `420` | 面板尺寸（200–2000） |
 | `post_exec_delay_ms` | `12` | 回删到 `match exec` 之间的等待 |
+| `placeholder` | `"space"` | 回传时垫什么字符给 espanso 的补偿退格：`space` / `zero_width` / `trigger` / `custom` / `none`。为什么必须有占位符见 [故障排查 · 占位符](troubleshooting.md#占位符展开时文档里为什么会多出几个字符) |
+| `placeholder_char` | `"·"` | `placeholder: custom` 时用的字符。必须恰好一个字符，且不能是换行 / 制表符 |
 | `preview_clipboard` | `false` | 详情区是否显示剪贴板全文；`false` 时只显示字符数 |
 | `show_detail` | `true` | 是否显示右侧详情区 |
 | `allow_paste_fallback` | `true` | `match exec` 失败时用「安全渲染 + 剪贴板粘贴」兜底 |
@@ -102,6 +106,7 @@ semisnip config schema               # schema 路径
 - `trigger` 必须能映射成物理键码（中文会直接报错）
 - `max_results` 限 1–100
 - `panel_width` / `panel_height` 限 200–2000
+- `placeholder` 只接受五个枚举值；`placeholder_char` 必须恰好一个字符且不是控制字符
 
 `set` / `unset` 会**整份重写**文件，除文件头外你手写的注释会丢；想保留注释就用 `config edit`，或者直接改文件——schema 会在编辑器里拦住写错的情况。
 
