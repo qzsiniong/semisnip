@@ -15,8 +15,8 @@
 //!
 //! 参考了 `~/code/labs/snippets` 的 `place()`：那边是输入法式贴靠（左缘对齐
 //! 插入点、下方放不下翻上方、按可用高度收缩行数）。这里不需要收缩行数
-//! （面板高度是固定配置），但保留了"选屏 → 贴靠 → 夹进可视区"的骨架，
-//! 水平方向改成居中。
+//! （面板高度是固定配置），但保留了"选屏 → 水平对齐光标 → 垂直贴靠 → 夹进
+//! 可视区"的骨架。
 
 use gpui_kit::{App, Bounds, DisplayId, Pixels, Size, WindowBounds, point, px, size};
 
@@ -150,16 +150,22 @@ fn shift(anchor: CaretAnchor, origin: (f32, f32)) -> (f32, f32, f32) {
     )
 }
 
-/// 自动：水平居中于该屏可视区，垂直贴插入点下方；下方放不下就翻到上方。
+/// 自动：左缘对齐光标、垂直贴插入点下方；下方放不下就翻到上方。
 ///
 /// 没有插入点时退化成居中——"跟随"没有目标可跟，居中至少是可预期的。
+/// 左缘对齐是 macOS 输入法式贴靠：面板从光标位置向右展开，就像
+/// 拼音候选窗那样，而不是把面板中心对着光标。右边溢出时夹进可视区。
 fn place_auto(visible: Area, anchor: Option<(f32, f32, f32)>, panel: (f32, f32)) -> (f32, f32) {
     let (width, height) = panel;
-    let x = center_x(visible, width);
-
-    let Some((_x, top, bottom)) = anchor else {
-        return (x, place_center(visible, panel).1);
+    let Some((anchor_x, top, bottom)) = anchor else {
+        return (center_x(visible, width), place_center(visible, panel).1);
     };
+    // 左缘对齐光标：x 直接取光标 x，右边溢出就夹住。
+    let x = clamp(
+        anchor_x,
+        visible.x + MARGIN,
+        visible.right() - MARGIN - width,
+    );
 
     let below = bottom + GAP;
     let above = top - GAP - height;
@@ -255,10 +261,23 @@ mod tests {
     }
 
     #[test]
-    fn auto_sits_below_the_caret_and_centers_horizontally() {
-        let (x, y) = place_auto(visible(), Some((900.0, 500.0, 520.0)), (720.0, 420.0));
-        assert_eq!(x, 540.0, "1800 宽的屏，720 宽的面板居中");
+    fn auto_left_aligns_to_caret_like_macos_ime() {
+        // 光标在 x=200：面板左缘也应该在 200
+        let (x, y) = place_auto(visible(), Some((200.0, 500.0, 520.0)), (720.0, 420.0));
+        assert_eq!(x, 200.0, "面板左缘 = 光标 x");
         assert_eq!(y, 526.0, "插入点下沿 520 + 6 的间距");
+
+        // 光标太靠右、面板放不下：夹住右边缘
+        let (x, _) = place_auto(visible(), Some((1750.0, 500.0, 520.0)), (720.0, 420.0));
+        assert_eq!(
+            x + 720.0,
+            visible().right() - MARGIN,
+            "面板整体不超出可视区右边缘"
+        );
+
+        // 光标太靠左、负溢出：夹住左边缘
+        let (x, _) = place_auto(visible(), Some((-50.0, 500.0, 520.0)), (720.0, 420.0));
+        assert_eq!(x, MARGIN, "负溢出时夹到左边界");
     }
 
     #[test]
