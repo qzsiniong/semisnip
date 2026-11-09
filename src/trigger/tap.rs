@@ -450,7 +450,7 @@ pub fn install(tx: Sender<Event>, config: TriggerConfig, enabled: bool) {
 mod imp {
     use std::ffi::c_void;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
 
     use super::*;
 
@@ -842,11 +842,11 @@ mod imp {
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             if source.is_null() {
                 log::error!("创建 run loop source 失败");
-                unsafe {
-                    CGEventTapEnable(tap as CGEventRef, false);
-                    CFMachPortInvalidate(tap as *mut c_void);
-                    CFRelease(tap as *const c_void);
-                }
+                // tap 创建成功但 source 失败：必须回收，否则每次失败都会泄漏
+                // 一个仍挂在系统事件链路上的端口。
+                CGEventTapEnable(tap as CGEventRef, false);
+                CFMachPortInvalidate(tap);
+                CFRelease(tap);
                 return;
             }
             let run_loop = CFRunLoopGetCurrent();

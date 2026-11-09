@@ -34,7 +34,16 @@ mod imp {
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
-        fn CFRelease(cf: *mut c_void);
+        /// CoreFoundation 的引用计数减一。CoreFoundation 的声明其实是
+        /// `CFRelease(CFTypeRef)`，即 `*const c_void`，但我们在这里操作的
+        /// 都是 ownership 转移过来的 owned 对象（从 `CGEventCreateKeyboardEvent`
+        /// 之类得到），用 `*mut c_void` 没问题——指针本身不要求可写。
+        ///
+        /// `trigger::tap` 也声明了同一个符号，那里用 `*const c_void`，
+        /// 两个声明必须统一（见 clippy::clashing_extern_declarations）。
+        /// 这里改成 `*const`，但调用侧把 owned 的 `*mut` 当 `*const` 传过去
+        /// 在 Rust 里是合法的（`*mut T` 可无损 coerce 到 `*const T`）。
+        fn CFRelease(cf: *const c_void);
     }
 
     /// 合成"按下 + 抬起"一对事件。
