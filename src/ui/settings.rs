@@ -270,6 +270,9 @@ impl Render for SettingsState {
 pub(crate) fn validate(config: &Config) -> Result<(), String> {
     crate::trigger::TriggerConfig::from_text(&config.trigger, config.trigger_timeout_ms)
         .map_err(|err| format!("触发键不合法：{err}"))?;
+    if let Some(err) = crate::config::direct_prefix_error(&config.trigger, &config.direct_prefix) {
+        return Err(err);
+    }
     if config.panel_width < 360.0 {
         return Err("面板宽度至少 360".into());
     }
@@ -754,8 +757,21 @@ fn general_page(_config: &Config) -> SettingPage {
                 "trigger",
                 "触发键",
                 "只支持 ASCII、最多 4 个字符——它会被编译成物理键码序列。\
-                     改完要跑一次 `semisnip install`，否则 espanso 的降级定义还是旧键。",
+                     改完要跑一次 `semisnip install`，否则 espanso 的降级定义还是旧键。\
+                     不能与直达触发词前缀相等或互为前缀。",
                 Field::new(|c| c.trigger.clone(), |c, v| c.trigger = v, ";;".into()),
+            ),
+            text_item(
+                "direct_prefix",
+                "直达触发词前缀",
+                "带此前缀的触发词由 espanso 原生展开，semisnip 不接管（默认 ,,）。\
+                     只允许 1–4 个可见 ASCII 字符；不能与触发键相等或互为前缀，\
+                     否则按第一个字符时面板和 espanso 会抢同一个键。",
+                Field::new(
+                    |c| c.direct_prefix.clone(),
+                    |c, v| c.direct_prefix = v,
+                    ",,".into(),
+                ),
             ),
             number_item(
                 "trigger_timeout_ms",
@@ -764,7 +780,20 @@ fn general_page(_config: &Config) -> SettingPage {
                 Field::new(
                     |c| c.trigger_timeout_ms as f64,
                     |c, v| c.trigger_timeout_ms = v.round() as u64,
-                    800.0,
+                    350.0,
+                ),
+                200.0,
+                3000.0,
+            ),
+            number_item(
+                "direct_window_ms",
+                "直达连按窗口",
+                "面板里空查询时连按两次逗号，进入「只匹配 ,, 触发词」的直达模式。\
+                 这里控制两次逗号之间最多隔多久（毫秒），与上面的触发键间隔无关。",
+                Field::new(
+                    |c| c.direct_window_ms as f64,
+                    |c, v| c.direct_window_ms = v.round() as u64,
+                    500.0,
                 ),
                 200.0,
                 3000.0,
@@ -841,6 +870,16 @@ fn appearance_page(_config: &Config) -> SettingPage {
             "显示详情栏",
             "关掉后列表占满整个面板宽度，适合只想要快速挑一条的人。",
             Field::new(|c| c.show_detail, |c, v| c.show_detail = v, true),
+        ),
+        switch_item(
+            "显示分值与命中徽标",
+            "每条结果后面标出相关度分值与命中的字段。调试「为什么这条排前面」时很有用，\
+             平时也可以关掉让列表更干净。",
+            Field::new(
+                |c| c.show_match_badges,
+                |c, v| c.show_match_badges = v,
+                true,
+            ),
         ),
         switch_item(
             "预览剪贴板内容",
@@ -925,6 +964,18 @@ fn behavior_page(config: &Config) -> SettingPage {
                 ),
             ),
         ]),
+        SettingGroup::new().title("提示").items(vec![number_item(
+            "hint_ms",
+            "展开提示时长",
+            "展开后「下次可直接输入 ,,xxx」提示停留多久（毫秒）。设为 0 就不弹这条提示。",
+            Field::new(
+                |c| c.hint_ms as f64,
+                |c, v| c.hint_ms = v.round() as u64,
+                3000.0,
+            ),
+            0.0,
+            10000.0,
+        )]),
         SettingGroup::new().title("占位符").items(placeholder_items),
     ])
 }

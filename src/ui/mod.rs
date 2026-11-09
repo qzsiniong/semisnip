@@ -11,9 +11,11 @@
 //! 面板不抢焦点是产品前提（回车之后不用还原前台）；设置和引导反过来——
 //! 用户是特意来操作的，抢焦点才符合直觉。
 
+pub mod modes;
 pub mod onboarding;
 pub mod place;
 pub mod settings;
+pub mod toast;
 pub mod view;
 pub mod window;
 

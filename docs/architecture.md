@@ -39,14 +39,17 @@ flowchart TB
 | 触发 | `trigger/tap.rs`、`trigger/machine.rs`、`trigger/keymap.rs` | 只认物理键码，不知道片段存在；命中时**一个键都不吞**——触发串的所有字符都落进文档，`erase` = 触发串全长。同一个 tap 还订阅鼠标按下——只为「点面板外 = 收起面板」，判定靠开窗时记住的窗口矩形，鼠标事件永远放行 |
 | 通信 | `ipc/proto.rs`、`ipc/server.rs`、`ipc/client.rs` | UDS + NDJSON，带版本号；单实例，daemon 不在时由 CLI 自愈拉起 |
 | 数据 | `index/loader.rs`、`index/service.rs` | 唯一读 YAML 的地方，产出 `Arc<Snapshot>`；后台重建，UI 永远只读 |
-| 检索 | `search/score.rs`、`search/query.rs`、`search/pinyin.rs` | 纯函数、零 IO、确定性排序 |
+| 搜索 | `search/score.rs`、`search/query.rs`、`search/pinyin.rs` | 纯函数、零 IO、确定性排序；查询只认小写字母 / 数字 / 空格 / 冒号，`:` 前缀变标签过滤；`rank_filtered` 负责停用过滤、标签过滤与别名命中，`rank_direct` 只认带直达前缀的触发词。精确 trigger 无条件置顶，`search_terms` 独立成档，正文仅在全文模式（`'`）下参与且是最低档 |
+| 本地库 | `library/mod.rs`、`library/migrate.rs`、`library/tags.rs`、`library/export.rs` | 停用状态与别名写在 `library.json`，**不写回 espanso YAML**；迁移只追加 `,,` 触发词，标签写回只追加 `label` 尾部，两者都按文件「临时文件 + rename」原子替换、先备份再写；导出按 `(file, ordinal)` 复制原始 match |
+| 直达 | `trigger/direct.rs` | 面板关闭时维护最近 24 个字符的缓冲，后缀命中已知直达触发词就投 `Event::DirectUse`（估算统计，不拦截输入） |
 | 预览 | `preview/vars.rs` | 只吃 `&Snippet`，**绝不执行 shell/script** |
 | 回传 | `handoff/mod.rs`、`handoff/inject.rs` | 只认 `Hit` 与 trigger 字符串，不关心 YAML 结构 |
 | espanso | `espanso/cli.rs` | 定位可执行文件；`match exec` / `match list --json` 的唯一出口 |
 | 路径 | `paths.rs` | 全项目唯一知道「东西放哪」的文件：系统目录问 `dirs`，自己的文件、`/Applications`、`/usr/local/bin`、LaunchAgent、espanso 的 `match/` 全在这里。业务模块只许调用，不许拼字面量 |
 | 配置 | `config.rs`、`cli/config_cmd.rs` | YAML + 内嵌 JSON Schema（`assets/config.schema.json`）；只碰自己的偏好，不碰 espanso 的 YAML |
 | 定位 | `platform.rs`、`ui/place.rs` | `platform` 只回答两个问题：每块屏在全局坐标里的矩形、插入点在哪（AX → 单行控件 → 鼠标三级退化）；`place` 把答案翻译成 gpui 要的「屏幕本地坐标 + DisplayId」，其中 `place_auto` / `place_center` 是纯函数、可单测。全局 ↔ 本地的换算只发生在这一层 |
-| 界面 | `ui/window.rs`、`ui/view.rs` | 面板：`WindowKind::PopUp`（NSPanel + NonactivatingPanel），不处理键盘；右上角 `✕` 是面板内唯一的可点元素，点面板外由 tap 的鼠标监听收起——两路都只投事件，收尾逻辑仍归 scheduler。`tap_ok` 为假时整块换成「需要授权」页——没接上键盘还画一列候选，等于骗人 |
+| 界面 | `ui/window.rs`、`ui/view.rs`、`ui/modes.rs` | 面板：`WindowKind::PopUp`（NSPanel + NonactivatingPanel），不处理键盘；右上角 `✕` 是面板内唯一的可点元素，点面板外由 tap 的鼠标监听收起——两路都只投事件，收尾逻辑仍归 scheduler。`tap_ok` 为假时整块换成「需要授权」页——没接上键盘还画一列候选，等于骗人。`modes` 负责关键字 / 命令 / 管理 / 迁移四种整块视图，速查则是叠在当前视图上的覆盖层（关掉后模式与选择原样还在），共用同一个外框与关闭入口 |
+| 轻提示 | `ui/toast.rs` | 展开带直达触发词的片段后浮一行「下次可直接输入 `,,xxx`」；同样是 `PopUp` + 不抢焦点，时长读 `hint_ms`（默认 3 秒，0 = 不弹），由 `Event::HintClose` 收起 |
 | 设置 | `ui/settings.rs` | 普通窗口 + gpui-component 的 `Settings`；字段直接读写一份全局 `SettingsState`，改动立即落盘并投 `ConfigChanged` |
 | 引导 | `ui/onboarding.rs` | 四步首次引导；体检是打开时的一次快照（`espanso --version` 要起进程），走完写 `onboarded` |
 | 窗口公共 | `ui/mod.rs` | 主题跟随系统外观（`sync_theme`）、`reveal()`、打开辅助功能设置页 |

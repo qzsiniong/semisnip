@@ -111,8 +111,19 @@ pub struct Config {
     pub enabled: bool,
     /// 触发串；只允许 ASCII，且会被编译成物理键码序列。
     pub trigger: String,
+    /// 直达触发词的前缀（默认 `,,`）。
+    ///
+    /// 这个前缀**不归 semisnip 接管**：带它的触发词由 espanso 原生展开。
+    /// 之所以单独配置，是为了在面板里展示“下次可直接输入 `,,xxx`”，
+    /// 并保证它与面板触发串不重叠——否则第一个逗号就会被 tap 吃掉。
+    pub direct_prefix: String,
     /// 两个触发键之间的最大间隔。
     pub trigger_timeout_ms: u64,
+    /// 面板内连按两次 `,` 进入直达模式的窗口。
+    ///
+    /// 与 `trigger_timeout_ms` 分开：触发键间隔决定"多久之内算同一个触发串"，
+    /// 而这个窗口只服务于「空查询下再按一次逗号」这条捷径，两者没有关系。
+    pub direct_window_ms: u64,
     pub focus_mode: FocusMode,
     pub max_results: usize,
     /// 面板位置策略，见 [`Position`]。
@@ -132,6 +143,10 @@ pub struct Config {
     /// 详情区是否展示剪贴板内容（默认只显示长度）。
     pub preview_clipboard: bool,
     pub show_detail: bool,
+    /// 结果行是否显示分值与命中字段徽标。
+    pub show_match_badges: bool,
+    /// 展开后「下次可直接输入 ,,xxx」提示的停留时长（毫秒）。
+    pub hint_ms: u64,
     /// `match exec` 失败时用剪贴板粘贴兜底（需要辅助功能权限）。
     pub allow_paste_fallback: bool,
     /// 是否已经看过首次引导。
@@ -151,7 +166,9 @@ impl Default for Config {
         Self {
             enabled: true,
             trigger: ";;".into(),
-            trigger_timeout_ms: 800,
+            direct_prefix: ",,".into(),
+            trigger_timeout_ms: 350,
+            direct_window_ms: 500,
             focus_mode: FocusMode::Nonactivating,
             max_results: 9,
             position: Position::Auto,
@@ -162,6 +179,8 @@ impl Default for Config {
             placeholder_char: "·".into(),
             preview_clipboard: false,
             show_detail: true,
+            show_match_badges: true,
+            hint_ms: 3000,
             allow_paste_fallback: true,
             onboarded: false,
         }
@@ -279,6 +298,48 @@ pub fn validate_placeholder_char(text: &str) -> Result<char, String> {
     Ok(c)
 }
 
+/// 校验直达触发词前缀本身。
+///
+/// 约束比面板触发串更窄：它不会被编译成键码，但会原样写进 YAML 触发词，
+/// 所以只允许 **1–4 个可见 ASCII**——空格、全角逗号、控制字符都会让
+/// espanso 的匹配行为不可预期。
+pub fn validate_direct_prefix(text: &str) -> Result<(), String> {
+    let count = text.chars().count();
+    if count == 0 {
+        return Err("直达触发词前缀不能为空".into());
+    }
+    if count > 4 {
+        return Err(format!("直达触发词前缀最多 4 个字符，收到 {count} 个"));
+    }
+    if !text.chars().all(|c| c.is_ascii_graphic()) {
+        return Err("直达触发词前缀只允许可见 ASCII 字符（不能有空格、中文或控制字符）".into());
+    }
+    Ok(())
+}
+
+/// 面板触发串与直达前缀的重叠检查。
+///
+/// 两个方向都必须拒绝：只要其中一个能推出另一个的前缀，用户按下去时
+/// tap 与 espanso 就会抢同一个字符（例如 trigger 是 `,`、直达前缀是 `,,`，
+/// 第一个逗号就被面板截走了）。
+pub fn direct_prefix_error(trigger: &str, direct_prefix: &str) -> Option<String> {
+    if let Err(err) = validate_direct_prefix(direct_prefix) {
+        return Some(err);
+    }
+    if trigger.is_empty() {
+        return None;
+    }
+    let forward = direct_prefix.starts_with(trigger);
+    let backward = trigger.starts_with(direct_prefix);
+    if forward || backward {
+        return Some(format!(
+            "面板触发串 `{trigger}` 与直达前缀 `{direct_prefix}` 重叠：\
+             这两套触发会抢同一个按键，请改成互不包含的值"
+        ));
+    }
+    None
+}
+
 /// 只有空白与注释的 YAML 视为「没写」。
 fn is_blank(raw: &str) -> bool {
     raw.lines().all(|line| {
@@ -349,7 +410,7 @@ mod tests {
     #[test]
     fn yaml_round_trips_and_carries_the_schema_hint() {
         let config = Config {
-            trigger: ",,".into(),
+            trigger: "::".into(),
             max_results: 12,
             ..Config::default()
         };
@@ -363,7 +424,8 @@ mod tests {
         assert!(!text.contains("$schema=/"), "抬头不该出现绝对路径");
 
         let back = Config::from_yaml(&text).unwrap();
-        assert_eq!(back.trigger, ",,");
+        assert_eq!(back.trigger, "::");
+        assert_eq!(back.direct_prefix, ",,");
         assert_eq!(back.max_results, 12);
     }
 
@@ -396,12 +458,12 @@ mod tests {
         let yml = dir.join(crate::paths::CONFIG_FILE);
         std::fs::write(
             dir.join("config.json"),
-            r#"{"trigger":",,","max_results":3}"#,
+            r#"{"trigger":"::","max_results":3}"#,
         )
         .unwrap();
 
         let config = Config::load_from(&yml);
-        assert_eq!(config.trigger, ",,");
+        assert_eq!(config.trigger, "::");
         assert_eq!(config.max_results, 3);
 
         // 新文件写出来了，旧文件改名留档而不是删掉
@@ -485,6 +547,32 @@ mod tests {
                 .unwrap_err()
                 .contains("控制字符")
         );
+    }
+
+    #[test]
+    fn direct_prefix_is_ascii_and_never_overlaps_the_panel_trigger() {
+        assert_eq!(validate_direct_prefix(",,"), Ok(()));
+        assert_eq!(validate_direct_prefix("::"), Ok(()));
+        assert!(validate_direct_prefix("").unwrap_err().contains("不能为空"));
+        assert!(
+            validate_direct_prefix("，，")
+                .unwrap_err()
+                .contains("ASCII")
+        );
+        assert!(
+            validate_direct_prefix(",,,,,")
+                .unwrap_err()
+                .contains("最多 4")
+        );
+
+        // 默认组合合法
+        assert_eq!(direct_prefix_error(";;", ",,"), None);
+        // 相等、互为前缀都要拒
+        assert!(direct_prefix_error(",", ",,").is_some());
+        assert!(direct_prefix_error(",,", ",,").is_some());
+        assert!(direct_prefix_error(";;;", ";").is_some());
+        // 完全不相干则不拦
+        assert_eq!(direct_prefix_error("jk", ",,"), None);
     }
 
     #[test]

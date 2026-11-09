@@ -34,6 +34,10 @@ semisnip log -f               # 复现问题时盯着
 | 设置里改了，面板没变 | 面板用的是打开那一刻的配置；尺寸类改动下次打开才生效 | 触发键/条数是立即生效的，尺寸要关掉面板重开 |
 | 改了辅助功能还是显示未授权 | 授权只影响「之后创建」的 tap；不过 daemon 每秒会对齐一次状态、每 5 秒重试一次安装，所以多数情况几秒后自己就好了 | 等两秒；还不行就点面板上的「重新检查」。真卡住才需要 `launchctl kickstart -k gui/$(id -u)/com.semisnip.daemon` |
 | 菜单栏看不到图标 | 菜单栏排满，被折叠进溢出区 | 见 [菜单栏与图标 · 图标没出现？](tray.md#图标没出现) |
+| 打 `,,sig` 没展开，反而弹了面板 | `direct_prefix` 与 `trigger` 相等或互为前缀（非法配置被旧版本放过了），或者只改了 semisnip 配置、没迁移/安装 espanso 侧的触发词 | `semisnip config get trigger` 与 `direct_prefix` 对照；改完跑 `semisnip install` 再 `espanso restart`。管理面板里的迁移只改 YAML，espanso 也要重启才认 |
+| 管理面板里的「毕业率」偏低 | 那是估算：tap 只看物理按键、不看 espanso 是否真的展开；密码框、安全输入、tap 未授权时完全不统计 | 不当成 bug 用；想看真实分布就同时看「面板」次数 |
+| 迁移后 YAML 注释没了 | `migrate` 会在文件里追加触发词，序列化会丢注释（所以先备份、先预览） | 从 `~/Library/Application Support/semisnip/backups/<时间>/` 恢复原文件；要保留注释就手动加逐条改 |
+| 导出文件里少了某条 | 导出按 `(文件, 序号)` 复制原始 match；索引重建后序号变化会让选中项对不上 | 重新打开管理面板再选一次；日志里会有「序号失配」的告警 |
 
 ## 占位符：展开时文档里为什么会多出几个字符
 

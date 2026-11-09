@@ -35,9 +35,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
 
 use crate::app::event::{Event, KeyMsg};
+use crate::trigger::direct::DirectBuffer;
+use crate::trigger::keymap;
 use crate::trigger::machine::{TriggerAction, TriggerConfig, TriggerMachine};
 
 /// 面板窗口在屏幕上的位置与大小（点，原点在屏幕左上角）。
@@ -87,6 +91,13 @@ pub struct TapShared {
     pass_next_key_up: AtomicBool,
     /// 面板窗口的屏幕矩形。鼠标按下时用来区分"点面板里"和"点面板外"。
     panel_rect: Mutex<PanelRect>,
+    /// 已知的直达触发词（带 `,,` 前缀），由 UI 线程在索引变化后整体替换。
+    /// 读多写少，用 `ArcSwap` 避免每按一个键都抢锁。
+    direct_triggers: ArcSwap<Vec<String>>,
+    /// 最近输入的字符缓冲，只在面板关闭时喂。
+    direct_buffer: Mutex<DirectBuffer>,
+    /// 同一个触发词的冷却，防止长按/连续输入把统计刷爆。
+    direct_last: Mutex<Option<(String, Instant)>>,
 }
 
 impl TapShared {
@@ -98,7 +109,34 @@ impl TapShared {
             tx,
             pass_next_key_up: AtomicBool::new(false),
             panel_rect: Mutex::new(PanelRect::default()),
+            direct_triggers: ArcSwap::from_pointee(Vec::new()),
+            direct_buffer: Mutex::new(DirectBuffer::default()),
+            direct_last: Mutex::new(None),
         }
+    }
+
+    /// 把一个可打印字符喂进直达缓冲，命中时返回触发词。
+    ///
+    /// 面板打开时不会走到这里；密码框/安全输入下 tap 收不到事件，统计自然缺失。
+    fn observe_direct(&self, ch: char) -> Option<String> {
+        if ch.is_control() {
+            return None;
+        }
+        let mut buffer = self.direct_buffer.lock().ok()?;
+        buffer.push(ch);
+        let triggers = self.direct_triggers.load();
+        let hit = buffer.detect(&triggers)?;
+
+        let now = Instant::now();
+        if let Ok(mut last) = self.direct_last.lock() {
+            if let Some((previous, at)) = last.as_ref() {
+                if previous == &hit && now.saturating_duration_since(*at) < Duration::from_secs(1) {
+                    return None;
+                }
+            }
+            *last = Some((hit.clone(), now));
+        }
+        Some(hit)
     }
 
     /// 放行下一个物理 keyUp（触发命中时调），返回是否确实有预约。
@@ -212,6 +250,15 @@ pub fn set_trigger(config: TriggerConfig) {
 pub fn set_enabled(enabled: bool) {
     if let Some(shared) = SHARED.get() {
         shared.set_enabled(enabled);
+    }
+}
+
+/// 更新“已知直达触发词”列表。UI 线程在索引或本地库变化后调用。
+///
+/// 只影响统计：真正的展开仍由 espanso 完成，semisnip 一个字符都不碰。
+pub fn set_direct_triggers(triggers: Vec<String>) {
+    if let Some(shared) = SHARED.get() {
+        shared.direct_triggers.store(Arc::new(triggers));
     }
 }
 
@@ -464,7 +511,20 @@ mod imp {
                 }
 
                 if msg.is_shortcut() || msg.alt {
+                    // 组合键打断了连续输入；不清缓冲的话，下一次输入可能把
+                    // “快捷键前的半截文本 + 触发词”误判成一个直达触发。
+                    if let Ok(mut buffer) = ctx.shared.direct_buffer.lock() {
+                        buffer.clear();
+                    }
                     return event;
+                }
+
+                // 直达触发词统计：只观察，不拦截。面板打开时不会走到这里
+                // （keydown 在 Panel 分支已经返回），所以不会和面板回车重复计数。
+                if let Some(ch) = keymap::char_for_keycode(code, flags & FLAG_SHIFT != 0) {
+                    if let Some(trigger) = ctx.shared.observe_direct(ch) {
+                        let _ = ctx.shared.tx.send(Event::DirectUse(trigger));
+                    }
                 }
 
                 // 暂停：不喂状态机、不开面板。**键照常放行**——触发键本来就不吞，

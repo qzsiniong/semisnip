@@ -13,19 +13,37 @@
     },
     "trigger": {
       "title": "触发串",
-      "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（semisnip match regenerate）。",
+      "description": "打开面板的按键序列。只允许 ASCII，最多 4 个字符，会被编译成物理键码序列。改这里之后要重新写一遍 espanso 的降级 match（semisnip match regenerate）。不能与 direct_prefix 相等或互为前缀，否则两套触发会抢同一个按键。",
       "type": "string",
       "default": ";;",
       "minLength": 1,
       "maxLength": 4,
       "pattern": "^[\\x20-\\x7E]+$",
-      "examples": [";;", ",,", "jk"]
+      "examples": [";;", "::", "jk"]
+    },
+    "direct_prefix": {
+      "title": "直达触发词前缀",
+      "description": "带这个前缀的触发词由 espanso 原生展开，semisnip 不接管（默认 ,,）。面板用它在结果里提示「下次可直接输入 ,,xxx」。只允许 1–4 个可见 ASCII 字符，且不能与 trigger 相等或互为前缀。",
+      "type": "string",
+      "default": ",,",
+      "minLength": 1,
+      "maxLength": 4,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "examples": [",,", "::"]
     },
     "trigger_timeout_ms": {
       "title": "触发键间隔",
       "description": "两个触发键之间的最大间隔（毫秒）。超过这个时间就当作普通输入，面板不会打开。",
       "type": "integer",
-      "default": 800,
+      "default": 350,
+      "minimum": 200,
+      "maximum": 3000
+    },
+    "direct_window_ms": {
+      "title": "直达连按窗口",
+      "description": "面板内空查询下连按两次逗号进入直达模式的最大间隔（毫秒）。与触发键间隔无关。",
+      "type": "integer",
+      "default": 500,
       "minimum": 200,
       "maximum": 3000
     },
@@ -101,6 +119,20 @@
       "description": "是否显示右侧预览区。关掉后列表会占满整个面板宽度。",
       "type": "boolean",
       "default": true
+    },
+    "show_match_badges": {
+      "title": "显示分值与命中徽标",
+      "description": "每条结果后面显示相关度分值与命中的字段（触发词 / 检索词 / 标题 / 标签 / 拼音 / 正文）。调试排序问题时打开很有用。",
+      "type": "boolean",
+      "default": true
+    },
+    "hint_ms": {
+      "title": "展开提示时长",
+      "description": "展开后「下次可直接输入 ,,xxx」提示停留多久（毫秒）。设为 0 则不再弹出提示。",
+      "type": "integer",
+      "default": 3000,
+      "minimum": 0,
+      "maximum": 10000
     },
     "allow_paste_fallback": {
       "title": "粘贴兜底",

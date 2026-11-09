@@ -18,6 +18,7 @@ pub mod espanso;
 pub mod handoff;
 pub mod index;
 pub mod ipc;
+pub mod library;
 pub mod mark;
 pub mod paths;
 pub mod platform;
@@ -90,6 +91,10 @@ pub fn run_daemon() {
                 trigger::TriggerConfig::from_text(&config.trigger, config.trigger_timeout_ms)
                     .unwrap_or_default();
             trigger::tap::install(tx.clone(), trigger_config, config.enabled);
+            // `AppState::new` 早于 `install`，那次 `set_direct_triggers` 落在
+            // 还没建好的 `SHARED` 上等于没写。装好之后补推一次，否则直达统计
+            // 要等到下一次索引重建才有词表。
+            state.update(cx, |state, _| state.refresh_direct_triggers());
 
             app::scheduler::spawn(&mut cx.to_async(), state, rx, tx.clone());
 

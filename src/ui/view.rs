@@ -11,11 +11,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, IntoElement, Render, SharedString, div, px};
 
 use crate::app::event::{self, Event};
-use crate::app::state::AppState;
+use crate::app::state::{AppState, COMMANDS, PanelMode};
+use crate::search::query::{Query, TokenKind};
+use crate::ui::modes;
 
 /// 候选行高。30 是压着"信息密度"和"点得到"之间的平衡点：
 /// 再矮会让触控板手抖选错，再高则 9 条候选放不进默认的 420 高面板。
-const ROW_H: f32 = 30.0;
+pub(crate) const ROW_H: f32 = 30.0;
 /// 详情栏宽度。固定值而不是比例：正文用等宽字体，宽度一变折行位置就跳，
 /// 用户来回切候选时会觉得版面在抖。
 const DETAIL_W: f32 = 286.0;
@@ -26,14 +28,14 @@ const DETAIL_W: f32 = 286.0;
 /// 绑在 `App` 上），只能把颜色一列列传进去。传三四个还看得懂，传到七八个就
 /// 分不清谁是谁了——clippy 的 `too_many_arguments` 也是这个意思。
 #[derive(Clone, Copy)]
-struct Palette {
-    border: gpui_kit::Hsla,
-    bg: gpui_kit::Hsla,
-    fg: gpui_kit::Hsla,
-    muted: gpui_kit::Hsla,
-    selection: gpui_kit::Hsla,
-    detail_bg: gpui_kit::Hsla,
-    danger: gpui_kit::Hsla,
+pub(crate) struct Palette {
+    pub border: gpui_kit::Hsla,
+    pub bg: gpui_kit::Hsla,
+    pub fg: gpui_kit::Hsla,
+    pub muted: gpui_kit::Hsla,
+    pub selection: gpui_kit::Hsla,
+    pub detail_bg: gpui_kit::Hsla,
+    pub danger: gpui_kit::Hsla,
 }
 
 /// 面板右上角的关闭按钮。
@@ -46,7 +48,7 @@ struct Palette {
 /// 所以这里给一个不依赖键盘、也不依赖权限的出口：点一下等于按 `Esc`，
 /// 统一投 [`Event::Cancel`] 交给 scheduler 收尾（放开吞键、删窗口、把触发词
 /// 补回文档），不在这里直接关窗——几条关闭路径必须走同一套收尾逻辑。
-fn close_button(p: Palette) -> AnyElement {
+pub(crate) fn close_button(p: Palette) -> AnyElement {
     div()
         .id("semisnip-close")
         .flex()
@@ -219,6 +221,145 @@ fn action_button(
         .into_any_element()
 }
 
+/// 速查覆盖层：叠在当前视图上，四周留一点边，让人看得出"底下那层还在"。
+///
+/// 关掉之后原模式原样恢复——这也是它不写成 `PanelMode::Help` 的原因：
+/// 模式一换，返回目标（管理多选、迁移勾选）就得额外保存一份。
+fn with_help(base: AnyElement, p: Palette, mono: SharedString, open: bool) -> AnyElement {
+    if !open {
+        return base;
+    }
+    div()
+        .relative()
+        .size_full()
+        .child(base)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .p_3()
+                .child(modes::render_help(p, mono)),
+        )
+        .into_any_element()
+}
+
+/// 查询解析条：实时告诉用户每个词被当成了什么。
+///
+/// 关键词、标签、被丢弃的字符分三色。没有这几行，用户按了 `:` 却不知道
+/// 它变成了标签过滤，或者粘贴了一段带引号的文本发现没搜到，只会觉得"面板坏了"。
+fn parse_bar(p: Palette, mono: SharedString, raw: &str) -> Option<AnyElement> {
+    let query = Query::parse(raw);
+    if query.terms.is_empty() {
+        return None;
+    }
+    let chips: Vec<AnyElement> = query
+        .terms
+        .iter()
+        .map(|term| {
+            let (color, bg) = match term.kind {
+                TokenKind::Keyword => (p.fg, p.bg),
+                TokenKind::Tag => (p.fg, p.selection),
+                TokenKind::Ignored => (p.danger, p.bg),
+            };
+            div()
+                .flex_none()
+                .rounded_sm()
+                .bg(bg)
+                .px_1()
+                .font_family(mono.clone())
+                .text_xs()
+                .text_color(color)
+                .child(SharedString::from(term.text.clone()))
+                .into_any_element()
+        })
+        .collect();
+
+    Some(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_3()
+            .pb_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(SharedString::from("解析")),
+            )
+            .children(chips)
+            .into_any_element(),
+    )
+}
+
+/// 标签建议弹窗：用户输入 `:` 时浮在列表上方，列出已有标签供挑选。
+///
+/// 与速查覆盖层不同，它只占顶部一小块（锚在查询行下方），不盖住整个面板——
+/// 用户一边看候选一边还能看到列表的变化。没有匹配候选时返回 `None`，
+/// 调用方就不画这层，省一个空白浮窗。
+fn render_tag_suggestions(state: &AppState, p: Palette, mono: SharedString) -> Option<AnyElement> {
+    if !state.tag_suggest {
+        return None;
+    }
+    let candidates = state.tag_candidates();
+    if candidates.is_empty() {
+        return None;
+    }
+    let cursor = state.tag_cursor.min(candidates.len() - 1);
+    let rows: Vec<AnyElement> = candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, tag)| {
+            let selected = idx == cursor;
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .bg(if selected { p.selection } else { p.bg })
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(36.))
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(SharedString::from(if selected { "↵" } else { "" })),
+                )
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_sm()
+                        .text_color(if selected { p.fg } else { p.muted })
+                        .child(SharedString::from(format!(":{tag}"))),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    Some(
+        div()
+            .absolute()
+            // 锚在查询行（约 44px）下方，左右留与查询行一致的内边距。
+            .left_0()
+            .right_0()
+            .top(px(46.))
+            .mx_3()
+            .rounded_sm()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.bg)
+            .shadow_lg()
+            .overflow_hidden()
+            .children(rows)
+            .into_any_element(),
+    )
+}
+
 impl Render for AppState {
     /// 画整个面板。
     ///
@@ -264,6 +405,43 @@ impl Render for AppState {
             return permission_view(p);
         }
 
+        // 模式视图整块替换“列表 + 详情”，各自都有同一个 `✕` 出口。
+        let entity = cx.entity();
+        match &self.mode {
+            PanelMode::Keyword { hit, .. } => {
+                let view = self.keyword_view(hit);
+                let base =
+                    modes::render_keyword(p, mono.clone(), &view, &hit.trigger, view.duplicates);
+                return with_help(base, p, mono.clone(), self.help_open);
+            }
+            PanelMode::Command { cursor } => {
+                return with_help(
+                    modes::render_command(p, mono.clone(), *cursor, &COMMANDS),
+                    p,
+                    mono.clone(),
+                    self.help_open,
+                );
+            }
+            PanelMode::Manage(_) => {
+                return with_help(
+                    modes::render_manage(self, p, mono.clone(), entity),
+                    p,
+                    mono.clone(),
+                    self.help_open,
+                );
+            }
+            PanelMode::Migrate(_) => {
+                return with_help(
+                    modes::render_migrate(self, p, mono.clone()),
+                    p,
+                    mono.clone(),
+                    self.help_open,
+                );
+            }
+            _ => {}
+        }
+
+        let show_badges = self.config.show_match_badges;
         let rows: Vec<AnyElement> = self
             .hits
             .iter()
@@ -306,132 +484,222 @@ impl Render for AppState {
                             .truncate()
                             .child(SharedString::from(hit.snippet.label.clone())),
                     )
-                    .child(
+                    // 分值与命中字段徽标：调试"为什么这条排前面"时最有用。
+                    // 用固定宽度而不是自适应，避免分数长度变化让整列左右跳。
+                    .children(show_badges.then(|| {
+                        let badges = hit.matched.labels().join("·");
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_none()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(38.))
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(SharedString::from(hit.score.to_string())),
+                            )
+                            .child(
+                                div()
+                                    .w(px(88.))
+                                    .text_xs()
+                                    .text_color(if hit.matched.is_empty() { muted } else { fg })
+                                    .truncate()
+                                    .child(SharedString::from(if badges.is_empty() {
+                                        "—".to_string()
+                                    } else {
+                                        badges
+                                    })),
+                            )
+                            .into_any_element()
+                    }))
+                    // 直达触发词是“下次可以不开面板”的线索，放在触发词这一侧。
+                    .children(hit.snippet.direct_trigger(&self.config.direct_prefix).map(
+                        |direct| {
+                            div()
+                                .w(px(76.))
+                                .font_family(mono.clone())
+                                .text_xs()
+                                .text_color(muted)
+                                .truncate()
+                                .child(SharedString::from(direct.to_string()))
+                                .into_any_element()
+                        },
+                    ))
+                    // 打开徽标后列表空间紧张，来源列让位给分值/徽标；
+                    // 来源文件在右侧详情区里仍然能看到。
+                    .children((!show_badges).then(|| {
                         div()
                             .w(px(104.))
                             .text_xs()
                             .text_color(muted)
                             .truncate()
-                            .child(SharedString::from(hit.snippet.source.display())),
-                    )
+                            .child(SharedString::from(hit.snippet.source.display()))
+                            .into_any_element()
+                    }))
                     .into_any_element()
             })
             .collect();
 
         let empty = self.hits.is_empty();
 
+        // 直达模式有自己的查询串；显示时带上 `,,` 前缀，否则用户会以为
+        // 自己按的标点被吃掉了。
+        let (shown_query, placeholder) = match &self.mode {
+            PanelMode::Direct { query } => (query.clone(), "直达触发词…"),
+            _ => (self.query.clone(), "搜索片段…"),
+        };
+        let mode_label = match &self.mode {
+            PanelMode::Direct { .. } => Some(",,"),
+            _ => None,
+        };
+        // 解析条只在查询视图出现：直达模式匹配的是 `,,` 后面的裸串，
+        // 把符号丢掉的规则套上去反而会误导。
+        let parse_row = match &self.mode {
+            PanelMode::Direct { .. } => None,
+            _ => parse_bar(p, mono.clone(), &self.query),
+        };
+
         let detail = self.build_detail(border, fg, muted, detail_bg, danger, mono.clone());
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .overflow_hidden()
-            .rounded_md()
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .shadow_lg()
-            .child(
-                // 查询行
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .font_family(mono.clone())
-                            .text_lg()
-                            .text_color(fg)
-                            .truncate()
-                            .child(SharedString::from(if self.query.is_empty() {
-                                "搜索片段…".to_string()
-                            } else {
-                                format!("{}▌", self.query)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(SharedString::from(format!(
+        let base =
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .size_full()
+                .overflow_hidden()
+                .rounded_md()
+                .border_1()
+                .border_color(border)
+                .bg(bg)
+                .shadow_lg()
+                .child(
+                    // 查询行
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(border)
+                        .children(mode_label.map(|label| {
+                            div()
+                                .flex_none()
+                                .rounded_sm()
+                                .bg(selection)
+                                .px_2()
+                                .text_xs()
+                                .text_color(fg)
+                                .child(SharedString::from(label))
+                                .into_any_element()
+                        }))
+                        .children(self.full_text.then(|| {
+                            div()
+                                .flex_none()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(border)
+                                .px_2()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(SharedString::from("' 全文"))
+                                .into_any_element()
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .font_family(mono.clone())
+                                .text_lg()
+                                .text_color(fg)
+                                .truncate()
+                                .child(SharedString::from(if shown_query.is_empty() {
+                                    placeholder.to_string()
+                                } else {
+                                    format!("{shown_query}▌")
+                                })),
+                        )
+                        .child(div().text_xs().text_color(muted).child(SharedString::from(
+                            format!(
                                 "{}/{} · {}",
                                 self.hits.len(),
                                 self.snapshot().len(),
                                 self.health_line()
-                            ))),
-                    )
-                    .child(close_button(p)),
-            )
-            .child(
-                // 列表 + 详情
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .p_1()
-                            .overflow_hidden()
-                            .when(empty, |this| {
-                                this.child(div().p_3().text_sm().text_color(muted).child(
-                                    SharedString::from(if self.query.is_empty() {
-                                        format!(
-                                            "没读到片段。检查 {}",
-                                            self.snapshot().config_root.display()
-                                        )
-                                    } else {
-                                        format!("没有匹配 `{}` 的片段", self.query)
-                                    }),
-                                ))
-                            })
-                            .children(rows),
-                    )
-                    // 详情栏可以在设置里关掉：关掉后列表占满整个面板，
-                    // 适合只想要"快速挑一条"的人。`show_detail` 只影响这一列，
-                    // 预览本身仍然在后台算（`fallback_text` 要用它）。
-                    .when(self.config.show_detail, |this| {
-                        this.child(div().w(px(DETAIL_W)).child(detail))
-                    }),
-            )
-            .child(
-                // 状态条
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(border)
-                    .text_xs()
-                    .text_color(muted)
-                    .child(SharedString::from("↑↓ 选择"))
-                    .child(SharedString::from("↵ 交给 espanso 展开"))
-                    .child(SharedString::from("esc 取消"))
-                    .when(!self.status.is_empty(), |this| {
-                        this.child(
+                            ),
+                        )))
+                        .child(close_button(p)),
+                )
+                .children(parse_row)
+                .child(
+                    // 列表 + 详情
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(
                             div()
-                                .text_color(danger)
-                                .child(SharedString::from(self.status.clone())),
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .p_1()
+                                .overflow_hidden()
+                                .when(empty, |this| {
+                                    this.child(div().p_3().text_sm().text_color(muted).child(
+                                        SharedString::from(if self.query.is_empty() {
+                                            format!(
+                                                "没读到片段。检查 {}",
+                                                self.snapshot().config_root.display()
+                                            )
+                                        } else {
+                                            format!("没有匹配 `{}` 的片段", self.query)
+                                        }),
+                                    ))
+                                })
+                                .children(rows),
                         )
-                    }),
-            )
-            // 和降级视图统一成 AnyElement：`render` 只有一个返回类型。
-            .into_any_element()
+                        // 详情栏可以在设置里关掉：关掉后列表占满整个面板，
+                        // 适合只想要"快速挑一条"的人。`show_detail` 只影响这一列，
+                        // 预览本身仍然在后台算（`fallback_text` 要用它）。
+                        .when(self.config.show_detail, |this| {
+                            this.child(div().w(px(DETAIL_W)).child(detail))
+                        }),
+                )
+                .child(
+                    // 状态条
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .px_3()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(border)
+                        .text_xs()
+                        .text_color(muted)
+                        .child(SharedString::from("↑↓ 选择"))
+                        .child(SharedString::from("↵ 交给 espanso 展开"))
+                        .child(SharedString::from("esc 取消"))
+                        .when(!self.status.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_color(danger)
+                                    .child(SharedString::from(self.status.clone())),
+                            )
+                        }),
+                )
+                // 标签建议弹窗：绝对定位浮在列表上方，不挤占布局。
+                .children(render_tag_suggestions(self, p, mono.clone()))
+                // 和降级视图统一成 AnyElement：`render` 只有一个返回类型。
+                .into_any_element();
+        with_help(base, p, mono, self.help_open)
     }
 }
 

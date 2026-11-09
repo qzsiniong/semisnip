@@ -10,4 +10,4 @@ pub mod query;
 pub mod score;
 
 pub use query::Query;
-pub use score::{SearchIndex, rank};
+pub use score::{SearchIndex, rank, rank_direct, rank_filtered};

@@ -24,9 +24,17 @@ const FIELDS: &[(&str, &str)] = &[
     ),
     (
         "trigger",
-        "开面板的触发串，ASCII，最多 4 个字符（如 \";;\"）",
+        "开面板的触发串，ASCII，最多 4 个字符（如 \";;\"）；不得与 direct_prefix 重叠",
+    ),
+    (
+        "direct_prefix",
+        "直达触发词前缀（默认 ,,）；espanso 原生触发，不与面板 trigger 重叠",
     ),
     ("trigger_timeout_ms", "两次触发键之间的最大间隔，200–3000"),
+    (
+        "direct_window_ms",
+        "面板内空查询时连按两次逗号进入直达模式的最大间隔，200–3000",
+    ),
     (
         "focus_mode",
         "nonactivating（目标 App 不失焦）｜activating（抢焦点，未实现）",
@@ -55,6 +63,11 @@ const FIELDS: &[(&str, &str)] = &[
         "详情区是否显示剪贴板内容（只显示长度，不显示全文）",
     ),
     ("show_detail", "是否显示右侧详情区"),
+    ("show_match_badges", "结果行是否显示分值与命中字段徽标"),
+    (
+        "hint_ms",
+        "展开后「下次可直接输入 ,,xxx」提示的停留时长，0–10000",
+    ),
     ("allow_paste_fallback", "match exec 失败时用剪贴板粘贴兜底"),
     (
         "onboarded",
@@ -231,8 +244,12 @@ fn set(key: &str, rest: &[String]) -> ExitCode {
     }
 
     // 用整份反序列化兜底：字段之间若有耦合，这里会直接报出来。
-    if let Err(err) = serde_yaml::from_value::<Config>(root.clone()) {
-        return fail(&format!("`{key}` 取值不合法：{err}"));
+    let config: Config = match serde_yaml::from_value(root.clone()) {
+        Ok(config) => config,
+        Err(err) => return fail(&format!("`{key}` 取值不合法：{err}")),
+    };
+    if let Some(err) = config::direct_prefix_error(&config.trigger, &config.direct_prefix) {
+        return fail(&err);
     }
     if let Err(err) = write_file(&root) {
         return fail(&format!("写入失败：{err}"));
@@ -255,6 +272,15 @@ fn unset(key: &str) -> ExitCode {
     let fallback = default.get(key).cloned().unwrap_or(Value::Null);
     if let Value::Mapping(map) = &mut root {
         map.insert(Value::String(key.to_string()), fallback.clone());
+    }
+    // 恢复默认值也可能造成新的重叠（例如把 trigger 从 jk 恢复成 ;; 本身没事，
+    // 但 direct_prefix 被设成 ; 时就会撞上默认 trigger）。
+    let config: Config = match serde_yaml::from_value(root.clone()) {
+        Ok(config) => config,
+        Err(err) => return fail(&format!("配置不合法：{err}")),
+    };
+    if let Some(err) = config::direct_prefix_error(&config.trigger, &config.direct_prefix) {
+        return fail(&err);
     }
     if let Err(err) = write_file(&root) {
         return fail(&format!("写入失败：{err}"));
@@ -372,6 +398,10 @@ fn validate(key: &str, value: Value) -> Result<Value, String> {
             TriggerConfig::from_text(text, 800)?;
             Ok(value)
         }
+        "direct_prefix" => {
+            crate::config::validate_direct_prefix(value.as_str().unwrap_or_default())?;
+            Ok(value)
+        }
         "trigger_timeout_ms" => {
             let ms = value.as_i64().unwrap_or_default();
             if !(200..=3_000).contains(&ms) {
@@ -478,6 +508,12 @@ mod tests {
         // 中文没有物理键码，早失败好过让 daemon 起不来
         assert!(validate("trigger", Value::String("，，".into())).is_err());
         assert!(validate("trigger", Value::String(";;;;;".into())).is_err());
+        // 直达前缀：可见 ASCII、1–4 个；与 trigger 的重叠在落盘前单独检查
+        assert!(validate("direct_prefix", Value::String(",,".into())).is_ok());
+        assert!(validate("direct_prefix", Value::String("，，".into())).is_err());
+        assert!(validate("direct_prefix", Value::String("".into())).is_err());
+        assert!(config::direct_prefix_error(";;", ",,").is_none());
+        assert!(config::direct_prefix_error(",", ",,").is_some());
         assert!(validate("max_results", Value::from(0)).is_err());
         assert!(validate("panel_width", Value::from(-10.0)).is_err());
         assert!(validate("focus_mode", Value::String("activating".into())).is_ok());

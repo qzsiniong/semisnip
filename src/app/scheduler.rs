@@ -164,8 +164,11 @@ fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
     state.update(cx, |state, cx| {
         state.tap_ok = ready;
         // 授权到位就把「降级中」的警告擦掉，否则面板底部会一直挂着一条过时消息。
+        // 同时补推直达词表：首次 `set_direct_triggers` 落在 tap 装好之前，
+        // 不补的话统计要等下一次索引重建才生效。
         if ready {
             state.status.clear();
+            state.refresh_direct_triggers();
         }
         cx.notify();
     });
@@ -217,6 +220,18 @@ fn handle(
                 Intent::None => {}
                 Intent::Cancel => cancel(cx, state),
                 Intent::Confirm(hit) => confirm(cx, state, hit),
+                Intent::Reload => {
+                    let index = state.read(cx).index.clone();
+                    index.reload_async(tx.clone());
+                }
+                Intent::OpenSettings => {
+                    // 先关面板：设置窗口是激活窗口，两者叠在一起会让用户
+                    // 分不清键盘归谁。
+                    cancel(cx, state);
+                    if let Err(err) = ui::settings::open(cx) {
+                        log::error!("打开偏好设置失败：{err}");
+                    }
+                }
             }
         }
 
@@ -258,6 +273,15 @@ fn handle(
             let index = state.read(cx).index.clone();
             index.reload_async(tx.clone());
         }
+
+        // 面板外直接打出了已知的直达触发词（tap 观察输入得到，属于估算）。
+        // 不刷新 UI：面板多半没开，通知只会让 gpui 去找一个不存在的窗口。
+        Event::DirectUse(trigger) => {
+            state.update(cx, |state, _| state.record_direct_use(&trigger));
+        }
+
+        // 轻提示到点自动收窗。窗口可能已经被下一次展开顶掉，关闭是幂等的。
+        Event::HintClose => ui::toast::close(cx),
 
         Event::TapUnavailable(message) => {
             log::warn!("{message}");
@@ -333,9 +357,17 @@ fn close(cx: &mut App, state: &Entity<AppState>) {
 }
 
 fn confirm(cx: &mut App, state: &Entity<AppState>, hit: crate::index::Hit) {
-    let (erase, config, fallback) = {
+    // 提示必须在关窗之前算：`direct_hint` 要读 `config` 与 snippet 的触发词，
+    // 关窗后状态就回到 Query 了（虽然字段还在，但先算完更不容易出错）。
+    let (erase, config, fallback, hint, hint_ms) = {
         let state = state.read(cx);
-        (state.erase, state.config.clone(), state.fallback_text())
+        (
+            state.erase,
+            state.config.clone(),
+            state.fallback_text(),
+            state.direct_hint(&hit),
+            state.config.hint_ms,
+        )
     };
 
     close(cx, state);
@@ -343,6 +375,24 @@ fn confirm(cx: &mut App, state: &Entity<AppState>, hit: crate::index::Hit) {
     state.update(cx, |state, _| state.record_use(&hit.trigger));
     log::info!("展开 {}", hit.trigger);
     state::run_confirm(hit, erase, config, fallback);
+
+    // 轻提示：告诉用户下次可以少开一次面板。时长可在偏好设置里改（默认 3 秒），
+    // 设为 0 则完全不弹——有人就是不喜欢这种"事后提示"。
+    if hint_ms > 0 {
+        if let Some(text) = hint {
+            ui::toast::open(cx, text);
+            let tx = crate::app::event::tx(cx);
+            std::thread::Builder::new()
+                .name("semisnip-hint".into())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_millis(hint_ms));
+                    if let Some(tx) = tx {
+                        let _ = tx.send(Event::HintClose);
+                    }
+                })
+                .ok();
+        }
+    }
 }
 
 #[cfg(test)]

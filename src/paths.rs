@@ -38,6 +38,8 @@ pub const CONFIG_FILE: &str = "config.yml";
 /// 与配置同目录的 schema，供 `$schema=./config.schema.json` 解析。
 pub const SCHEMA_FILE: &str = "config.schema.json";
 pub const USAGE_FILE: &str = "usage.json";
+/// 片段本地库：停用状态与拼音别名。**不写回用户 YAML**。
+pub const LIBRARY_FILE: &str = "library.json";
 pub const LOG_FILE: &str = "semisnip.log";
 pub const SOCKET_FILE: &str = "semisnip.sock";
 
@@ -87,6 +89,21 @@ pub fn schema_path() -> PathBuf {
 /// 但它确实是用户数据（记录了使用习惯），不该被系统清理工具顺手删掉。
 pub fn usage_path() -> PathBuf {
     config_dir().join(USAGE_FILE)
+}
+
+/// 片段本地库（停用 / 别名）。与使用统计一样属于用户数据，放配置目录。
+pub fn library_path() -> PathBuf {
+    config_dir().join(LIBRARY_FILE)
+}
+
+/// 导出目录。迁移/批量导出只往里写，不碰 espanso 的 match 目录。
+pub fn exports_dir() -> PathBuf {
+    config_dir().join("exports")
+}
+
+/// 迁移备份目录。按时间戳分目录，附 `manifest.tsv` 记录原路径。
+pub fn backups_dir() -> PathBuf {
+    config_dir().join("backups")
 }
 
 /// daemon 日志文件。放配置目录的理由同上：崩溃现场要留得住。
@@ -261,11 +278,19 @@ mod tests {
     fn every_file_sits_in_the_right_dir() {
         // 路径集中以后最容易犯的错是复制粘贴：把日志写进缓存目录、
         // 把 socket 写进配置目录。这里把每个文件钉在它该在的目录下。
-        for path in [config_path(), schema_path(), usage_path(), log_path()] {
+        for path in [
+            config_path(),
+            schema_path(),
+            usage_path(),
+            library_path(),
+            log_path(),
+        ] {
             assert_eq!(path.parent(), Some(config_dir().as_path()), "{path:?}");
         }
         assert_eq!(socket_path(), cache_dir().join(SOCKET_FILE));
         assert_eq!(completions_dir(), config_dir().join("completions"));
+        assert_eq!(exports_dir(), config_dir().join("exports"));
+        assert_eq!(backups_dir(), config_dir().join("backups"));
     }
 
     #[test]

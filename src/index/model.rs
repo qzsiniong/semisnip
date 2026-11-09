@@ -251,6 +251,20 @@ impl Snippet {
         self.triggers.first().map(String::as_str).unwrap_or("")
     }
 
+    /// 第一条带直达前缀的触发词（如 `,,log`）。
+    ///
+    /// `,,\w` 由 espanso 原生展开，semisnip 只负责展示与提示；没有就返回
+    /// `None`，UI 不必再关心前缀是否为空。
+    pub fn direct_trigger(&self, prefix: &str) -> Option<&str> {
+        if prefix.is_empty() {
+            return None;
+        }
+        self.triggers
+            .iter()
+            .find(|t| t.starts_with(prefix))
+            .map(String::as_str)
+    }
+
     /// 是否包含会在展开时产生副作用的变量。
     ///
     /// 面板用它决定要不要在候选行上加个提示，避免用户以为回车只是插文本，
@@ -274,6 +288,143 @@ impl Snippet {
         blob.push(' ');
         blob.push_str(&first_line.to_lowercase());
         blob
+    }
+}
+
+/// 标签允许的字符：ASCII 字母、数字、`-`、`_`。
+///
+/// 刻意不放开中文：面板没有输入法，中文标签在管理面板里根本打不出来，
+/// 写回 YAML 也只是让用户困惑。已有中文标签仍可被读取与检索（见 [`split_label`]）。
+pub fn is_tag_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
+}
+
+/// 把用户输入规整成一个可写回的标签；不合法时返回 `None`。
+///
+/// 允许前面带一个冒号（用户习惯写 `:js`），其余字符必须落在 [`is_tag_char`]。
+pub fn normalize_tag(text: &str) -> Option<String> {
+    let text = text.trim().trim_start_matches(':');
+    if text.is_empty() || !text.chars().all(is_tag_char) {
+        return None;
+    }
+    // 统一小写：`准备:JS` 与 `:js` 必须是同一个标签，否则过滤时会出现
+    // "看起来有、打出来没"的怪现象。
+    Some(text.to_ascii_lowercase())
+}
+
+/// 从 label 里拆出「标题」与「标签」。
+///
+/// 格式（PRD FR-05）：`label: "<标题> :<tag1> :<tag2> ..."`。
+/// 从右往左扫：遇到第一个不以 `:` 开头的词就停；`::xx` 是转义，表示那个冒号
+/// 属于标题本身，因此同样停止解析。没有标签的存量 label 会整体成为标题，
+/// 行为零变化。
+pub fn split_label(label: &str) -> (String, Vec<String>) {
+    let mut parts: Vec<&str> = label.split_whitespace().collect();
+    let mut tags_rev: Vec<String> = Vec::new();
+    while let Some(last) = parts.last() {
+        if last.starts_with("::") {
+            break;
+        }
+        let Some(tag) = last.strip_prefix(':') else {
+            break;
+        };
+        if tag.is_empty() {
+            break;
+        }
+        tags_rev.push(tag.to_string());
+        parts.pop();
+    }
+    tags_rev.reverse();
+    (parts.join(" "), tags_rev)
+}
+
+/// 把标题与标签拼回 label。标签按调用方给的顺序排列。
+pub fn format_label(title: &str, tags: &[String]) -> String {
+    let mut out = title.trim().to_string();
+    for tag in tags {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push(':');
+        out.push_str(tag);
+    }
+    out
+}
+
+/// 在现有 label 后追加标签，去重（不区分大小写），保留用户原书写顺序。
+pub fn append_tags(label: &str, new_tags: &[String]) -> String {
+    let (title, mut tags) = split_label(label);
+    for tag in new_tags {
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.clone());
+        }
+    }
+    format_label(&title, &tags)
+}
+
+/// 命中字段。结果行的徽标按这个枚举出字。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MatchField {
+    Trigger,
+    SearchTerms,
+    Title,
+    Tag,
+    Pinyin,
+    Body,
+}
+
+impl MatchField {
+    /// 徽标上的短名。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Trigger => "触发词",
+            Self::SearchTerms => "检索词",
+            Self::Title => "标题",
+            Self::Tag => "标签",
+            Self::Pinyin => "拼音",
+            Self::Body => "正文",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// 一条命中覆盖了哪些字段。用位图而不是 `Vec`：排序路径上每条候选都会写它，
+/// 避免为徽标分配一堆小字符串。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MatchFields {
+    bits: u8,
+}
+
+impl MatchFields {
+    pub fn add(&mut self, field: MatchField) {
+        self.bits |= field.bit();
+    }
+
+    pub fn has(self, field: MatchField) -> bool {
+        self.bits & field.bit() != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.bits == 0
+    }
+
+    /// 按固定顺序列出命中字段，供结果行拼接徽标。
+    pub fn labels(self) -> Vec<&'static str> {
+        [
+            MatchField::Trigger,
+            MatchField::SearchTerms,
+            MatchField::Title,
+            MatchField::Tag,
+            MatchField::Pinyin,
+            MatchField::Body,
+        ]
+        .into_iter()
+        .filter(|field| self.has(*field))
+        .map(MatchField::label)
+        .collect()
     }
 }
 
@@ -374,4 +525,67 @@ pub struct Hit {
     pub snippet: Arc<Snippet>,
     pub trigger: String,
     pub score: i64,
+    /// 命中的字段，结果行据此显示徽标。
+    pub matched: MatchFields,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_label_stops_at_first_non_tag_word() {
+        assert_eq!(
+            split_label("部署脚本 :dev :ops"),
+            (
+                "部署脚本".to_string(),
+                vec!["dev".to_string(), "ops".to_string()]
+            )
+        );
+        // 没有标签：整体是标题，行为与旧版本一致
+        assert_eq!(
+            split_label("JS console"),
+            ("JS console".to_string(), vec![])
+        );
+        // 中间的冒号不是标签
+        assert_eq!(
+            split_label("提示: 这是一句说明"),
+            ("提示: 这是一句说明".to_string(), vec![])
+        );
+    }
+
+    #[test]
+    fn escaped_colon_stays_in_the_title() {
+        // `::xx` 是转义：这个冒号属于标题，解析到它就停。
+        assert_eq!(
+            split_label("时间格式 ::hh :dev"),
+            ("时间格式 ::hh".to_string(), vec!["dev".to_string()])
+        );
+        // 右向左连续扫描：两个 `:` 词都是标签
+        assert_eq!(
+            split_label("a :b :c"),
+            ("a".to_string(), vec!["b".to_string(), "c".to_string()])
+        );
+    }
+
+    #[test]
+    fn append_tags_dedupes_and_keeps_order() {
+        assert_eq!(
+            append_tags("日志 :dev", &["work".into()]),
+            "日志 :dev :work"
+        );
+        assert_eq!(append_tags("日志 :Dev", &["dev".into()]), "日志 :Dev");
+        assert_eq!(append_tags("no-label", &["dev".into()]), "no-label :dev");
+        assert_eq!(append_tags("", &["dev".into()]), ":dev");
+    }
+
+    #[test]
+    fn only_ascii_tags_can_be_written_back() {
+        assert_eq!(normalize_tag(":js"), Some("js".to_string()));
+        assert_eq!(normalize_tag("DEV"), Some("dev".to_string()));
+        assert_eq!(normalize_tag("dev_ops-2"), Some("dev_ops-2".to_string()));
+        assert_eq!(normalize_tag("表单"), None);
+        assert_eq!(normalize_tag(":"), None);
+        assert_eq!(normalize_tag("a b"), None);
+    }
 }

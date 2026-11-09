@@ -6,6 +6,7 @@
 //!
 //! 三者串起来是一条链：tap 拿到键码 → machine 判断是否命中 → tap 投 `Event::Open`。
 
+pub mod direct;
 pub mod keymap;
 pub mod machine;
 pub mod tap;

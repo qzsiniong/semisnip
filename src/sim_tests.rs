@@ -399,6 +399,7 @@ fn hit_sh() -> Hit {
         snippet: snippet("sh", "uptime", "SH-OK;"),
         trigger: "sh".to_string(),
         score: 0,
+        matched: Default::default(),
     }
 }
 

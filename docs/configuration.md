@@ -26,7 +26,9 @@
 # yaml-language-server: $schema=./config.schema.json
 enabled: true
 trigger: ;;
-trigger_timeout_ms: 800
+direct_prefix: ",,"
+trigger_timeout_ms: 350
+direct_window_ms: 500
 focus_mode: nonactivating
 max_results: 9
 position: auto
@@ -37,6 +39,8 @@ placeholder: space
 placeholder_char: ·
 preview_clipboard: false
 show_detail: true
+show_match_badges: true
+hint_ms: 3000
 allow_paste_fallback: true
 onboarded: false
 ```
@@ -73,8 +77,10 @@ semisnip config schema
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 是否接管 `;;`。`false` 时 `;;` 不弹面板（字符照常落进文档），菜单栏图标变成「划掉」样式；espanso 的降级触发与菜单栏的「打开片段面板」仍然可用 |
-| `trigger` | `";;"` | 只允许 ASCII，最多 4 个字符，会被编译成物理键码序列 |
-| `trigger_timeout_ms` | `800` | 两个触发键之间的最大间隔（200–3000） |
+| `trigger` | `";;"` | 只允许 ASCII，最多 4 个字符，会被编译成物理键码序列；不能与 `direct_prefix` 相等或互为前缀 |
+| `direct_prefix` | `",,"` | espanso 原生直达触发词前缀。面板关闭时 semisnip 不拦截它，只用来在候选里标出直达触发词、统计「毕业率」；同样只允许 1–4 个可见 ASCII 字符 |
+| `trigger_timeout_ms` | `350` | 两个触发键之间的最大间隔（200–3000） |
+| `direct_window_ms` | `500` | 面板内空查询时连按两次 `,` 进入直达模式的判定窗口（200–3000）；与触发键间隔无关 |
 | `focus_mode` | `"nonactivating"` | 预留项；`activating` 分支尚未实现 |
 | `max_results` | `9` | 候选条数上限（1–100） |
 | `position` | `"auto"` | `auto` 贴着输入光标；`center` 屏幕可视区居中。两者都跟随光标 / 当前窗口所在的那块屏 |
@@ -84,6 +90,8 @@ semisnip config schema
 | `placeholder_char` | `"·"` | `placeholder: custom` 时用的字符。必须恰好一个字符，且不能是换行 / 制表符 |
 | `preview_clipboard` | `false` | 详情区是否显示剪贴板全文；`false` 时只显示字符数 |
 | `show_detail` | `true` | 是否显示右侧详情区 |
+| `show_match_badges` | `true` | 结果行是否显示相关度分值与命中字段徽标（触发词 / 检索词 / 标题 / 标签 / 拼音 / 正文） |
+| `hint_ms` | `3000` | 展开后直达提示的停留时长（0–10000）；`0` 表示不弹 |
 | `allow_paste_fallback` | `true` | `match exec` 失败时用「安全渲染 + 剪贴板粘贴」兜底 |
 | `onboarded` | `false` | 不是偏好是状态：`false` 时 daemon 启动会弹引导窗，走完置 `true` |
 
@@ -106,6 +114,7 @@ semisnip config schema               # schema 路径
 `set` 先按默认值的类型解析（`true/false`、整数、小数、字符串），再做语义校验：
 
 - `trigger` 必须能映射成物理键码（中文会直接报错）
+- `direct_prefix` 必须是 1–4 个可见 ASCII 字符，且不能与 `trigger` 相等或互为前缀（否则 `;;` 会抢走 `,,` 的第一个字符）
 - `max_results` 限 1–100
 - `panel_width` / `panel_height` 限 200–2000
 - `placeholder` 只接受五个枚举值；`placeholder_char` 必须恰好一个字符且不是控制字符

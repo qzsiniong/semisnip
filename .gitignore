@@ -50,7 +50,7 @@ logs/
 .VolumeIcon.icns
 
 # ---------- 本机工具 ----------
-# WorkBuddy 的项目记忆与工作记录，只对本机有意义。
 .workbuddy/
+.trae/
 
 # 注：Cargo.lock 是二进制项目的依赖锁文件，要提交，别加进来。
