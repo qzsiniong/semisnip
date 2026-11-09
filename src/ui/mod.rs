@@ -74,8 +74,25 @@ pub fn reveal(target: PathBuf, fallback_dir: PathBuf) {
 /// espanso shell 触发（能用，但每次都要等 espanso 启动），用户很少知道
 /// 该去哪一页勾选，所以直接把那一页调出来。
 pub fn open_accessibility_settings() {
-    let url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-    if let Err(err) = Command::new("open").arg(url).spawn() {
-        log::error!("打开辅助功能设置失败：{err}");
+    // 只读探测不会把进程登记进 TCC 列表——新机器上列表里可能根本没有 Semisnip，
+    // 用户打开设置也无从勾选。带 prompt 的调用会弹一次系统提示并完成登记。
+    let trusted = crate::trigger::tap::request_trust_prompt();
+    if trusted {
+        log::info!("辅助功能已授权，仍然打开设置页供核对");
     }
+
+    // 新版 macOS 把这一页挪到了 `PrivacySecurity.extension`；旧 URL 在部分版本
+    // 会落到设置首页。先试新的，失败再回退旧的。
+    const URLS: [&str; 2] = [
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    ];
+    for url in URLS {
+        match Command::new("open").arg(url).status() {
+            Ok(status) if status.success() => return,
+            Ok(status) => log::debug!("辅助功能深链 {url} 返回 {status}"),
+            Err(err) => log::debug!("辅助功能深链 {url} 启动失败：{err}"),
+        }
+    }
+    log::error!("打开辅助功能设置失败：两个深链都不可用");
 }

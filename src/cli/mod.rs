@@ -502,6 +502,9 @@ fn doctor() -> ExitCode {
             }
         }
     }
+    if degraded {
+        print_accessibility_diagnostics();
+    }
 
     let config = Config::load();
     println!(
@@ -526,6 +529,57 @@ fn doctor() -> ExitCode {
             println!("另有 1 项降级（辅助功能未授权）。");
         }
         ExitCode::FAILURE
+    }
+}
+
+/// 辅助功能不可用时补齐"为什么、修哪里"的信息。
+///
+/// 最常见的失败不是"没勾"，而是**勾给了旧副本**：重装换了签名或路径之后，
+/// TCC 列表里的条目还指向老的可执行文件，新进程读到的仍是未授权。只报一个
+/// 布尔值帮不上忙，这里把可执行路径与签名标识打出来，让用户能和列表对照。
+fn print_accessibility_diagnostics() {
+    let exe = std::env::current_exe().unwrap_or_default();
+    println!("              当前可执行：{}", exe.display());
+    match code_signature(&exe) {
+        Some(signature) => println!("              签名标识：{signature}"),
+        None => println!("              签名标识：读取失败（未签名或 codesign 不可用）"),
+    }
+    let bundle = crate::paths::app_bundle();
+    if bundle.exists() {
+        println!("              daemon 入口：{}", bundle.display());
+    }
+    println!("              修复：重新跑 `semisnip install`；列表里若是旧路径，先移除再添加");
+    println!(
+        "              彻底重置：`tccutil reset Accessibility {}`（仅提示，不会自动执行）",
+        crate::paths::BUNDLE_ID
+    );
+}
+
+/// 读 `codesign -dv --verbose=2` 的标识符与 Team。详情在 stderr 里。
+fn code_signature(path: &Path) -> Option<String> {
+    let output = std::process::Command::new("codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let mut identifier = None;
+    let mut team = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("Identifier=") {
+            identifier = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("TeamIdentifier=") {
+            team = Some(value.trim().to_string());
+        }
+    }
+    match (identifier, team) {
+        (Some(id), Some(team)) if team != "not set" => Some(format!("{id}（Team {team}）")),
+        (Some(id), _) => Some(format!("{id}（无 Team：ad-hoc 或未签名）")),
+        _ => None,
     }
 }
 

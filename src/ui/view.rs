@@ -3,8 +3,9 @@
 //! 面板不接收焦点、不处理 gpui 的键盘事件——所有按键由 tap 直接改状态，
 //! 这里只负责把状态画出来（因此重绘靠 `cx.notify()` 驱动）。
 //!
-//! 唯一的鼠标交互是右上角的 `✕`：键盘那条路依赖 tap，tap 不在时它就是
-//! 全部（详见 [`close_button`]）。别的点击一律不处理。
+//! 鼠标交互只有两处：右上角的 `✕`，以及授权页里那列可点候选。键盘那条路
+//! 依赖 tap，tap 不在时它们就是全部出路（详见 [`close_button`] 与
+//! [`permission_view`]）。
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::*;
@@ -74,18 +75,23 @@ pub(crate) fn close_button(p: Palette) -> AnyElement {
         .into_any_element()
 }
 
-/// 降级视图：`tap` 没装上时**整块换掉**，不画候选列表。
+/// 降级视图：`tap` 没装上时替换掉搜索列表。
 ///
-/// 这条路径以前不存在，代价是一次真实的困惑：没有「辅助功能」授权时
-/// `;;` 仍然经 espanso 打开面板，列表也照常渲染，于是用户打字发现毫无反应，
-/// 看起来就是「面板卡死」。摆一列点了没反应的候选等于骗人——那一刻该说的是
-/// 「我需要授权」，并且要给出一次点击就能到的地方。
+/// 这一页要回答两件事：**为什么打字没反应**、**现在还能做什么**。
 ///
-/// 两个按钮分别对应两种真实场景：
-/// - 「打开辅助功能设置」：还没授权的；
-/// - 「重新检查」：授权过了但列表里是旧条目（重装换了签名），或者刚勾上还没生效。
-///   点它等于立刻跑一次 [`crate::trigger::tap::retry`]，几秒内面板自己会变成正常态。
-fn permission_view(p: Palette) -> AnyElement {
+/// - 原因：面板自己不处理键盘，按键全靠全局 tap 转发；没有授权，tap 装不上。
+/// - 还能做什么：保留一份**鼠标可点**的候选——点一下直接走 espanso 展开。
+///   过去这一页把列表整块换掉，面板虽然有窗口却完全不可用；没有键盘的人
+///   连一条片段都选不了。现在列表里每一行都是通往 espanso 的真实路径。
+///
+/// 三个按钮分别对应三种真实场景：
+/// - 「打开辅助功能设置」：还没授权的。会先调用带 prompt 的 AX API，把本进程
+///   登记进 TCC 列表并弹一次系统提示，再打开设置面板。
+/// - 「重新检查」：刚勾上还没生效、或列表里是重装前的旧条目。点它立刻跑一次
+///   [`crate::trigger::tap::retry`]，结果直接写在页面上，不再静默。
+/// - 「稍后」：没有 tap 时"点面板外关闭"也失效（鼠标判定同样装在 tap 上），
+///   所以必须有一条不需要键盘、也不需要点外面的退出路径。
+fn permission_view(p: Palette, mono: SharedString, state: &AppState) -> AnyElement {
     let step = |number: &'static str, text: &'static str| {
         div()
             .flex()
@@ -102,6 +108,61 @@ fn permission_view(p: Palette) -> AnyElement {
             )
             .child(SharedString::from(text))
     };
+
+    // 候选只放前 6 条：这一页主体是授权说明，列表只是"现在还能做什么"的兜底。
+    let rows: Vec<AnyElement> = state
+        .hits
+        .iter()
+        .take(6)
+        .enumerate()
+        .map(|(index, hit)| {
+            let trigger = hit.trigger.clone();
+            let label = hit.snippet.label.clone();
+            div()
+                .id(("semisnip-permission-row", index))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(24.))
+                .px_2()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(move |style| style.bg(p.selection))
+                .on_click(move |_, _, cx| {
+                    if let Some(tx) = event::tx(cx) {
+                        let _ = tx.send(Event::ConfirmIndex(index));
+                    }
+                })
+                .child(
+                    div()
+                        .w(px(112.))
+                        .font_family(mono.clone())
+                        .text_xs()
+                        .text_color(p.fg)
+                        .truncate()
+                        .child(SharedString::from(trigger)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .truncate()
+                        .child(SharedString::from(label)),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    let reason = (!state.permission_reason.is_empty()).then(|| {
+        div()
+            .text_xs()
+            .text_color(p.danger)
+            .child(SharedString::from(state.permission_reason.clone()))
+            .into_any_element()
+    });
 
     div()
         .flex()
@@ -138,14 +199,12 @@ fn permission_view(p: Palette) -> AnyElement {
                 .flex()
                 .flex_col()
                 .flex_1()
-                .gap_3()
+                .min_h_0()
+                .gap_2()
                 .p_4()
                 .overflow_hidden()
                 .child(div().text_sm().text_color(p.fg).child(SharedString::from(
-                    "面板本身不接收键盘：按键全靠一个全局 tap 转发过来。",
-                )))
-                .child(div().text_sm().text_color(p.fg).child(SharedString::from(
-                    "没有授权，这个 tap 装不上，所以在这里打字、回车、Esc 都不会有反应。",
+                    "面板自己不处理键盘：按键全靠一个全局 tap 转发过来。没有授权，tap 装不上，所以在这里打字、回车、Esc 都不会有反应。",
                 )))
                 .child(
                     div()
@@ -157,12 +216,13 @@ fn permission_view(p: Palette) -> AnyElement {
                             "2",
                             "勾选 Semisnip（重装会换签名；已在列表里的话先删掉再加回来）",
                         ))
-                        .child(step("3", "回来点「重新检查」——不用重启 daemon")),
+                        .child(step("3", "回来点「重新检查」——几秒内自动接管，不用重启 daemon")),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_row()
+                        .flex_wrap()
                         .gap_2()
                         .child(action_button(
                             p,
@@ -176,21 +236,69 @@ fn permission_view(p: Palette) -> AnyElement {
                             "semisnip-recheck-tap",
                             "重新检查",
                             false,
-                            |_| {
-                                crate::trigger::tap::retry();
+                            |cx| {
+                                let outcome = crate::trigger::tap::retry();
+                                set_permission_reason(cx, recheck_message(outcome));
                             },
-                        )),
+                        ))
+                        .child(action_button(p, "semisnip-permission-later", "稍后", false, |cx| {
+                            if let Some(tx) = event::tx(cx) {
+                                let _ = tx.send(Event::Cancel);
+                            }
+                        })),
                 )
+                .children(reason)
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(p.muted)
-                        .child(SharedString::from(
-                            "授权之前「;;」仍然能打开这个面板，但里面搜不了东西。",
-                        )),
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .gap_1()
+                        .border_t_1()
+                        .border_color(p.border)
+                        .pt_2()
+                        .child(
+                            div().text_xs().text_color(p.muted).child(SharedString::from(
+                                "没有键盘也能用鼠标直接展开（走 espanso 求值）：",
+                            )),
+                        )
+                        .when(rows.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.muted)
+                                    .child(SharedString::from("还没读到片段，检查 espanso 的 match 目录。")),
+                            )
+                        })
+                        .children(rows),
                 ),
         )
         .into_any_element()
+}
+
+/// 「重新检查」的结果文案。每种失败都要说清下一步，不再点完毫无变化。
+fn recheck_message(outcome: crate::trigger::tap::Retry) -> &'static str {
+    use crate::trigger::tap::Retry;
+    match outcome {
+        Retry::AlreadyReady => "键盘接管已就绪，正在切回搜索列表…",
+        Retry::Disabled => "调试开关 SEMISNIP_NO_TAP 正在强制降级，取消它后重启 daemon",
+        Retry::NotInstalled => "键盘接管尚未初始化，请重启 semisnip 再试",
+        Retry::NotTrusted => "系统里还没勾选 Semisnip：先按上面三步授权",
+        Retry::Spawned => "已提交接管请求，成功后本页会自动切换…",
+        Retry::SpawnFailed => "无法启动键盘线程，请查看日志后重启 daemon",
+    }
+}
+
+/// 把检测结果写回面板状态。授权页没有状态条，结果只能走 `permission_reason`。
+fn set_permission_reason(cx: &mut gpui_kit::App, message: &str) {
+    if let Some(global) = cx.try_global::<crate::app::state::GlobalApp>() {
+        let entity = global.0.clone();
+        entity.update(cx, |state, cx| {
+            state.permission_reason = message.to_string();
+            cx.notify();
+        });
+    }
 }
 
 /// 授权页上的按钮。和 `✕` 一样走 `on_click`，不需要键盘、也不需要 focus。
@@ -402,7 +510,7 @@ impl Render for AppState {
 
         // 没有键盘接管就别画列表：那种情况下打字没反应，候选再漂亮也是假的。
         if !self.tap_ok {
-            return permission_view(p);
+            return permission_view(p, mono, self);
         }
 
         // 模式视图整块替换“列表 + 详情”，各自都有同一个 `✕` 出口。

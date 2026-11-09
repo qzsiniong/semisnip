@@ -81,6 +81,12 @@ struct TapWatch {
     last_check: Instant,
     /// 下一次允许「重新安装」的时间。
     next_retry: Instant,
+    /// 当前重试间隔。失败时指数退避（1→2→4→8→10 秒封顶），
+    /// 面板正卡在授权页且已授权时压回 1 秒——用户在等，不能让他干等 10 秒。
+    retry_delay: Duration,
+    /// 连续几次读到「已就绪但系统说未授权」。`AXIsProcessTrusted` 存在缓存，
+    /// 单次 false 不足以判定撤销；连续 3 次（约 3 秒）才真正回退。
+    untrusted_streak: u32,
 }
 
 impl TapWatch {
@@ -89,7 +95,18 @@ impl TapWatch {
         Self {
             last_check: now,
             next_retry: now,
+            retry_delay: Duration::from_secs(1),
+            untrusted_streak: 0,
         }
+    }
+}
+
+/// 下一次重试间隔。`hurry` 时固定 1 秒，否则指数退避、10 秒封顶。
+fn next_retry_delay(current: Duration, hurry: bool) -> Duration {
+    if hurry {
+        Duration::from_secs(1)
+    } else {
+        (current * 2).min(Duration::from_secs(10))
     }
 }
 
@@ -140,21 +157,48 @@ pub fn spawn(cx: &mut AsyncApp, state: Entity<AppState>, rx: Receiver<Event>, tx
 ///    面板画的才是真实状态。
 /// 2. **权限补上之后自动接上**。`install()` 只跑一次，用户后来才去系统设置
 ///    勾授权的话，进程这边不会自己知道——以前必须重启 daemon 才生效。
-///    这里每 5 秒试一次（`retry` 内部还会先看权限，没权限时不会建线程）。
+///    这里按退避间隔试一次（`retry` 内部还会先看权限，没权限时不会建线程）。
 fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
     const CHECK: Duration = Duration::from_secs(1);
-    const RETRY: Duration = Duration::from_secs(5);
+    /// 撤销判定需要的连续 false 次数（`AXIsProcessTrusted` 有缓存，防误判）。
+    const UNTRUSTED_STREAK: u32 = 3;
 
     if watch.last_check.elapsed() < CHECK {
         return;
     }
     watch.last_check = Instant::now();
 
-    if !tap::ready() && Instant::now() >= watch.next_retry {
-        watch.next_retry = Instant::now() + RETRY;
-        if tap::retry() {
-            log::info!("检测到辅助功能已授权，正在重装键盘 tap");
+    // tap 已就绪但系统说没授权：连续确认 3 次后撤回，避免"授权了却假死"。
+    // 刚授权时 `AXIsProcessTrusted` 可能短暂仍为 false，但那时 `ready()` 还是
+    // false，不会进这个分支；等到 tap 真装上了，系统状态也已稳定。
+    if tap::ready() {
+        if tap::accessibility_granted() {
+            watch.untrusted_streak = 0;
+        } else {
+            watch.untrusted_streak += 1;
+            if watch.untrusted_streak >= UNTRUSTED_STREAK {
+                watch.untrusted_streak = 0;
+                tap::mark_unavailable("辅助功能授权已被撤销，键盘接管已停止");
+            }
         }
+    }
+
+    if !tap::ready() && Instant::now() >= watch.next_retry {
+        // 面板正卡在授权页、且系统那边确实已经授权时才用 1 秒快试——
+        // 用户在等结果；其余场景按指数退避，避免长期没权限时每 1 秒白建线程。
+        let hurry = {
+            let state = state.read(cx);
+            state.open && !state.tap_ok && tap::accessibility_granted()
+        };
+        match tap::retry() {
+            tap::Retry::Spawned => log::info!("检测到辅助功能已授权，正在重装键盘 tap"),
+            tap::Retry::SpawnFailed => log::error!("键盘 tap 线程启动失败，稍后重试"),
+            tap::Retry::NotInstalled => log::debug!("tap 尚未初始化，稍后重试"),
+            tap::Retry::NotTrusted => log::debug!("等待辅助功能授权，稍后重试"),
+            tap::Retry::AlreadyReady | tap::Retry::Disabled => {}
+        }
+        watch.retry_delay = next_retry_delay(watch.retry_delay, hurry);
+        watch.next_retry = Instant::now() + watch.retry_delay;
     }
 
     let ready = tap::ready();
@@ -163,15 +207,28 @@ fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
     }
     state.update(cx, |state, cx| {
         state.tap_ok = ready;
-        // 授权到位就把「降级中」的警告擦掉，否则面板底部会一直挂着一条过时消息。
+        // 授权到位就把「降级中」的警告擦掉，否则面板底部会一直挂着一条过时消息；
+        // 授权页的失败原因也一并清掉，下次再出问题由新事件重新填。
         // 同时补推直达词表：首次 `set_direct_triggers` 落在 tap 装好之前，
         // 不补的话统计要等下一次索引重建才生效。
         if ready {
             state.status.clear();
+            state.permission_reason.clear();
             state.refresh_direct_triggers();
         }
         cx.notify();
     });
+    // 引导窗口的体检只在打开时算一次；tap 状态是外部变化的，这里顺手对齐
+    // 它的「辅助功能」一行，用户不用再点一次「重新检查」才看到变绿。
+    if let Some(onboarding) = cx
+        .try_global::<crate::ui::onboarding::GlobalOnboarding>()
+        .map(|global| global.0.clone())
+    {
+        onboarding.update(cx, |onboarding, cx| {
+            onboarding.sync_tap();
+            cx.notify();
+        });
+    }
     log::info!(
         "键盘 tap {}",
         if ready {
@@ -287,9 +344,18 @@ fn handle(
             log::warn!("{message}");
             state.update(cx, |state, cx| {
                 state.tap_ok = false;
-                state.status = message;
+                // 授权页不画底部状态条，技术化原因必须进 `permission_reason`。
+                state.permission_reason = message;
                 cx.notify();
             });
+        }
+
+        Event::ConfirmIndex(index) => {
+            gate.clear();
+            let hit = state.read(cx).hits.get(index).cloned();
+            if let Some(hit) = hit {
+                confirm(cx, state, hit);
+            }
         }
 
         Event::Shutdown => {
@@ -317,6 +383,9 @@ fn open_panel(cx: &mut App, state: &Entity<AppState>, origin: Origin, erase: usi
         // 开面板这一刻按 tap 的真实状态决定画什么：有授权就画列表，
         // 没有就画授权页——摆一列点了没反应的候选等于骗人。
         state.tap_ok = tap::ready();
+        if state.tap_ok {
+            state.permission_reason.clear();
+        }
         cx.notify();
     });
     tap::set_panel_open(true);
@@ -463,5 +532,19 @@ mod tests {
         // 放行之后闸门必须是空的：如果哪天有人把 `take_due` 改回返回 `Event`
         // 并顺手 `handle`，这条断言会先红。
         assert!(gate.pending.is_none(), "放行即出闸，不许留残影");
+    }
+
+    #[test]
+    fn retry_backoff_doubles_and_is_capped() {
+        let mut delay = Duration::from_secs(1);
+        for expected in [2, 4, 8, 10, 10] {
+            delay = next_retry_delay(delay, false);
+            assert_eq!(delay, Duration::from_secs(expected));
+        }
+        // 面板卡在授权页、系统已授权：立刻压回 1 秒，用户在等。
+        assert_eq!(
+            next_retry_delay(Duration::from_secs(10), true),
+            Duration::from_secs(1)
+        );
     }
 }

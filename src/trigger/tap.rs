@@ -232,6 +232,44 @@ pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
+/// 主动把「已就绪」撤回：授权被撤销、或 tap 被系统禁用时由看门狗调用。
+///
+/// `READY` 过去是单向的（装成功就永远 true），所以用户在系统设置里取消勾选
+/// 之后，面板仍会画候选列表——按键却一个都收不到。这个函数补上回退那半程：
+/// 同步收回 `panel_open`、复位状态机，并投一条 [`Event::TapUnavailable`]
+/// 让面板切到授权页。只在确实从 true 变 false 时动作（幂等）。
+pub fn mark_unavailable(reason: &str) {
+    if !READY.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    log::warn!("{reason}");
+    if let Some(shared) = SHARED.get() {
+        shared.panel_open.store(false, Ordering::SeqCst);
+        if let Ok(mut machine) = shared.machine.lock() {
+            machine.reset();
+        }
+        let _ = shared.tx.send(Event::TapUnavailable(reason.to_string()));
+    }
+}
+
+/// [`retry`] 的结果。返回值而不是 `bool`，因为面板上的「重新检查」要把
+/// 三种失败（没授权 / 没初始化 / 线程起不来）分开告诉用户，不能再静默。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// 已经就绪，不必再装。
+    AlreadyReady,
+    /// 调试开关 `SEMISNIP_NO_TAP` 强制降级。
+    Disabled,
+    /// `install` 还没跑过，没有可复用的 shared。
+    NotInstalled,
+    /// 系统里还没勾选 Semisnip。
+    NotTrusted,
+    /// 已授权，tap 线程正在重装（几秒内 `ready()` 会变 true）。
+    Spawned,
+    /// 线程创建失败（极罕见，通常是资源耗尽）。
+    SpawnFailed,
+}
+
 /// 运行期换触发键。
 ///
 /// 设置窗口改完 `trigger` 之后调它，不必重启 daemon。**别改成再调一次
@@ -305,39 +343,62 @@ pub fn accessibility_granted() -> bool {
     false
 }
 
-/// 权限补上之后重新装一次 tap，装上了返回 true。
+/// 向系统申请辅助功能授权：会把当前进程**登记进 TCC 列表**并弹一次系统提示。
+///
+/// 只读的 [`accessibility_granted`] 不会登记，所以新机器上用户按引导打开设置后
+/// 列表里可能根本没有 Semisnip，无从勾选。这个调用补上"先露面再让用户勾"的
+/// 那一步，只在用户明确点了「去授权 / 打开辅助功能设置」时调用。
+///
+/// 返回值是**调用当下**的授权状态（`false` 不代表弹窗失败），因此调用方仍应
+/// 打开设置面板作为兜底。
+pub fn request_trust_prompt() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        imp::request_trust_prompt()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// 权限补上之后重新装一次 tap，结果用 [`Retry`] 区分。
 ///
 /// [`install`] 只在启动时跑一次，结果就此固定：用户后来去系统设置里勾了
 /// 「辅助功能」，daemon 这边不会自己知道——以前只能 `launchctl kickstart` 重启，
 /// 而多数人根本不知道该敲这条命令，表现就是「授权了也没用」。
 ///
-/// 这个函数给调度器每秒探一次用：授权一到，当场把 tap 接上，面板立刻能打字。
+/// 这个函数给调度器的看门狗用：授权一到，当场把 tap 接上，面板立刻能打字。
 ///
 /// 三个提前返回都有意义：
 /// - 已经就绪 → 别重复装（`imp::run` 会再建一个 run loop）；
 /// - `SHARED` 还没设 → `install` 都没跑过，没东西可复用；
 /// - 没有权限 → 现在重试必然失败，而且会每秒新建一个线程。
-pub fn retry() -> bool {
+pub fn retry() -> Retry {
     if READY.load(Ordering::SeqCst) {
-        return true;
+        return Retry::AlreadyReady;
     }
     // 调试开关同上：强制降级时别让看门狗每 5 秒白建一个线程。
     if std::env::var_os("SEMISNIP_NO_TAP").is_some() {
-        return false;
+        return Retry::Disabled;
     }
     let Some(shared) = SHARED.get() else {
-        return false;
+        return Retry::NotInstalled;
     };
     if !accessibility_granted() {
-        return false;
+        return Retry::NotTrusted;
     }
     let shared = shared.clone();
     // 不复用 `install`：`SHARED` 已经设过了，再调只会打一行「已安装过」然后返回。
     // 状态机与 `tx` 都在 `shared` 里，重开线程即可。
-    std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name("semisnip-tap".into())
         .spawn(move || imp::run(shared))
-        .is_ok()
+    {
+        Ok(_) => Retry::Spawned,
+        Err(err) => {
+            log::error!("键盘 tap 线程启动失败：{err}");
+            Retry::SpawnFailed
+        }
+    }
 }
 
 /// 启动 tap 线程。整个进程只会成功一次（`SHARED` 是 `OnceLock`）。
@@ -411,7 +472,20 @@ mod imp {
         /// 鼠标事件的全局位置：屏幕左上角为原点、单位为点，与 `Window::bounds()` 同一套。
         fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
         fn AXIsProcessTrusted() -> bool;
+        /// 带选项的版本：传入 `kAXTrustedCheckOptionPrompt = true` 时，系统会把
+        /// 当前进程登记进「辅助功能」列表并弹出授权提示。
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        /// `CFStringRef` 常量。用 `SyncPtr` 包一层：裸指针不是 `Sync`，
+        /// 没法直接声明成 `extern static`，但它本身只读、跨线程读安全。
+        static kAXTrustedCheckOptionPrompt: SyncPtr;
     }
+
+    /// `extern static` 需要 `Sync`；这个包装只为过类型检查，布局仍是裸指针。
+    #[repr(transparent)]
+    struct SyncPtr(*const c_void);
+
+    // SAFETY: 指向 CoreFoundation 的不可变常量，只读访问。
+    unsafe impl Sync for SyncPtr {}
 
     /// `CGPoint` 的镜像。自己定义而不是引 `core_graphics`：这里只需要传值，
     /// 布局是两个连续的 `f64`（`#[repr(C)]` 保证与 C 一致）。
@@ -589,6 +663,12 @@ mod imp {
                 event
             }
             DISABLED_TIMEOUT | DISABLED_USER => {
+                // 授权被撤销时重新启用也没意义：撤回「已就绪」，让面板切到授权页，
+                // 而不是继续吞键或假装可用。
+                if !unsafe { AXIsProcessTrusted() } {
+                    mark_unavailable("辅助功能授权已失效，键盘接管停止");
+                    return event;
+                }
                 log::warn!("事件 tap 被系统禁用，尝试重新启用");
                 let tap = ctx.tap.load(Ordering::SeqCst);
                 if tap != 0 {
@@ -605,6 +685,24 @@ mod imp {
     /// 这就是引导页要提供「重新检查」按钮的原因。
     pub fn ax_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
+    }
+
+    /// 向系统弹一次授权提示，并把本进程登记进 TCC 列表。
+    ///
+    /// 用 `core_foundation` 组装选项字典，而不是手写 CFDictionary 回调：
+    /// 常量 `kAXTrustedCheckOptionPrompt` 直接作为 key（不能拿字符串近似替代，
+    /// 否则系统会静默忽略选项，用户看不到任何弹窗）。
+    pub fn request_trust_prompt() -> bool {
+        use core_foundation::base::TCFType as _;
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::string::{CFString, CFStringRef};
+
+        unsafe {
+            let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt.0 as CFStringRef);
+            let options = CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
+            AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as *const c_void)
+        }
     }
 
     /// 建 tap、挂 run loop、阻塞运行（直到进程退出）。

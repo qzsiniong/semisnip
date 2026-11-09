@@ -41,6 +41,11 @@ pub enum Event {
     Open { origin: Origin, erase: usize },
     /// 面板里的一次按键。只由 tap 线程产生。
     Key(KeyMsg),
+    /// 用鼠标点了第 `index` 条候选直接展开。
+    ///
+    /// 只有**没有键盘接管**的授权页会发：那一页没有 tap、收不到回车，
+    /// 但窗口本身还能收鼠标；这是降级状态下唯一能把片段交给 espanso 的路。
+    ConfirmIndex(usize),
     /// 收起面板（Esc、关闭按钮、菜单项都汇聚到这里）。
     Cancel,
     /// 点了面板窗口外面（面板开着时，由 tap 的鼠标监听判定）。

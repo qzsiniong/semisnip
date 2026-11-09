@@ -201,6 +201,12 @@ pub struct AppState {
 
     /// 一行临时状态文字（错误提示等），显示在面板底部。
     pub status: String,
+    /// 键盘接管不可用的具体原因（授权缺失 / 授权被撤销 / 调试开关等）。
+    ///
+    /// 与 `status` 分开：`status` 是面板底部的临时提示（搜索无结果、导出失败…），
+    /// 而授权页不画状态条——技术化原因塞进 `status` 等于白写。这个字段专供
+    /// 授权页展示，也用来承载「重新检查」的结果。
+    pub permission_reason: String,
     /// 键盘 tap 此刻是否可用。
     ///
     /// 为假时面板收不到任何按键，`ui::view` 会整块换成授权引导页。
@@ -247,6 +253,7 @@ impl AppState {
             origin: Origin::Manual,
             preview: None,
             status: String::new(),
+            permission_reason: String::new(),
             tap_ok: crate::trigger::tap::ready(),
             handle: None,
             built_at,

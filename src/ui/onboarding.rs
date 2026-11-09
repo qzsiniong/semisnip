@@ -274,11 +274,19 @@ impl OnboardingState {
         }
     }
 
-    /// 重新体检。授权之后必须点一下——`AXIsProcessTrusted` 是查出来缓存住的，
-    /// 只有 tap 装成功了 `ready()` 才会变 true，而 tap 是启动时装的。
+    /// 重新体检。授权之后可以手动点，但不再"必须"点：调度器的看门狗每轮
+    /// 都会调 [`Self::sync_tap`] 把这一项跟真实状态对齐。
     fn recheck(&mut self, cx: &mut Context<Self>) {
         self.checks = Checks::probe(cx);
         cx.notify();
+    }
+
+    /// 只对齐「辅助功能」这一项，供调度器在 tap 状态变化时调用。
+    ///
+    /// 不能直接重跑 [`Checks::probe`]：那会起 `espanso --version` 子进程，
+    /// 每秒一次代价太高。`tap::ready()` 只是一次原子读，随手更新是安全的。
+    pub(crate) fn sync_tap(&mut self) {
+        self.checks.tap = crate::trigger::tap::ready();
     }
 }
 
@@ -624,7 +632,7 @@ fn status(palette: &Palette, ok: bool) -> AnyElement {
 fn footnote(palette: &Palette, step: usize, cx: &mut Context<OnboardingState>) -> AnyElement {
     let text = match step {
         0 => "两步就能用：授权辅助功能 → 敲 ;;",
-        1 => "授权之后 semisnip 要重启一次才会接管键盘；这里的检查也会跟着变绿。",
+        1 => "授权后几秒内会自动接管；没变绿就点「重新检查」，不用重启 daemon。",
         2 => "↑ ↓ 选择 · ↵ 确认 · Esc 取消",
         _ => "这些都能在菜单栏的「偏好设置…」里改。",
     };
