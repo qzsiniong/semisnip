@@ -404,10 +404,15 @@ fn hit_sh() -> Hit {
 }
 
 /// 测试配置：关掉一切真实等待（`post_exec_delay_ms`）与路径副作用。
+///
+/// 占位符固定成 `space`：这些用例走的是「面板确认 → `match exec`」主路径，
+/// 而 `Config::default()` 的默认值是 `trigger`（直接委派给 espanso），
+/// 那是另一个分支（见 `trigger_placeholder_delegates_instead_of_calling_match_exec`）。
 fn config(allow_paste_fallback: bool) -> Config {
     Config {
         post_exec_delay_ms: 0,
         allow_paste_fallback,
+        placeholder: Placeholder::Space,
         ..Config::default()
     }
 }

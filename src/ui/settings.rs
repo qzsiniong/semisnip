@@ -914,12 +914,12 @@ fn behavior_page(config: &Config) -> SettingPage {
         Field::new(
             |c| c.placeholder,
             |c, v| c.placeholder = v,
-            Placeholder::Space,
+            Placeholder::Trigger,
         ),
         vec![
-            ("空格（默认）", Placeholder::Space),
+            ("空格", Placeholder::Space),
             ("零宽字符 U+200B", Placeholder::ZeroWidth),
-            ("片段触发串", Placeholder::Trigger),
+            ("片段触发串（默认）", Placeholder::Trigger),
             ("自定义字符", Placeholder::Custom),
             ("不补（危险）", Placeholder::None),
         ],

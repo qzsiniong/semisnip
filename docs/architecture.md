@@ -79,7 +79,7 @@ tap 里还有一道总开关（配置字段 `enabled`，菜单栏「暂停触发
 
 1. 面板 `orderOut`（由调用方先行关闭）
 2. 回删落进文档的触发符（`erase` 个——触发键不吞，它们真的在文档里）
-3. 打 `trigger_len` 个**占位字符**（`config.placeholder` 选内容：空格 / 零宽 U+200B / 自定义字符；`none` 表示不打）
+3. 打 `trigger_len` 个**占位字符**（`config.placeholder` 选内容：触发串（默认）/ 空格 / 零宽 U+200B / 自定义字符；`none` 表示不打）
 4. `espanso match exec -t <trigger>`——espanso 按 trigger 全长回删（TriggerCompensation），删掉的恰好是那串占位字符，然后注入展开文本
 5. 失败时：先退掉占位字符（IPC 没成功就没有补偿退格来收走它们），`allow_paste_fallback` 为真则安全渲染 + 剪贴板粘贴，否则只记日志
 

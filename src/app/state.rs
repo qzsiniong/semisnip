@@ -423,7 +423,7 @@ impl AppState {
             self.query.truncate(colon);
             self.query.push(':');
             self.query.push_str(tag);
-            self.query.push_str(" ");
+            self.query.push(' ');
         }
         self.tag_suggest = false;
         self.selected = 0;

@@ -175,7 +175,7 @@ impl Default for Config {
             panel_width: 720.0,
             panel_height: 420.0,
             post_exec_delay_ms: 12,
-            placeholder: Placeholder::Space,
+            placeholder: Placeholder::Trigger,
             placeholder_char: "·".into(),
             preview_clipboard: false,
             show_detail: true,
@@ -493,9 +493,9 @@ mod tests {
 
     #[test]
     fn placeholder_settings_round_trip() {
-        // 默认是空格：不写这两个键的老配置必须原样按默认值跑。
+        // 默认是触发串：不写这两个键的老配置必须原样按默认值跑。
         let default = Config::from_yaml("trigger: \"<<\"\n").unwrap();
-        assert_eq!(default.placeholder, Placeholder::Space);
+        assert_eq!(default.placeholder, Placeholder::Trigger);
         assert_eq!(default.placeholder_char, "·");
 
         let config =

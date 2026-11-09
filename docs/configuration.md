@@ -35,7 +35,7 @@ position: auto
 panel_width: 720.0
 panel_height: 420.0
 post_exec_delay_ms: 12
-placeholder: space
+placeholder: trigger
 placeholder_char: ·
 preview_clipboard: false
 show_detail: true
@@ -86,7 +86,7 @@ semisnip config schema
 | `position` | `"auto"` | `auto` 贴着输入光标；`center` 屏幕可视区居中。两者都跟随光标 / 当前窗口所在的那块屏 |
 | `panel_width` / `panel_height` | `720` / `420` | 面板尺寸（200–2000） |
 | `post_exec_delay_ms` | `12` | 回删到 `match exec` 之间的等待 |
-| `placeholder` | `"space"` | 回传时垫什么字符给 espanso 的补偿退格：`space` / `zero_width` / `trigger` / `custom` / `none`。为什么必须有占位符见 [故障排查 · 占位符](troubleshooting.md#占位符展开时文档里为什么会多出几个字符) |
+| `placeholder` | `"trigger"` | 回传时垫什么字符给 espanso 的补偿退格：`trigger`（默认，用片段触发串）/ `space` / `zero_width` / `custom` / `none`。为什么必须有占位符见 [故障排查 · 占位符](troubleshooting.md#占位符展开时文档里为什么会多出几个字符) |
 | `placeholder_char` | `"·"` | `placeholder: custom` 时用的字符。必须恰好一个字符，且不能是换行 / 制表符 |
 | `preview_clipboard` | `false` | 详情区是否显示剪贴板全文；`false` 时只显示字符数 |
 | `show_detail` | `true` | 是否显示右侧详情区 |
