@@ -96,6 +96,14 @@ pub fn library_path() -> PathBuf {
     config_dir().join(LIBRARY_FILE)
 }
 
+/// 最近一次「因 tap 被系统禁用而重启 daemon」的时间戳（Unix 秒）。
+///
+/// 只放一个数字。它的唯一用途是**跨进程冷却**：tap 被禁用后 daemon 会重启，
+/// 新进程必须知道刚刚出过事，否则会立刻再建一个 tap、再被禁用、再重启。
+pub fn tap_restart_marker() -> PathBuf {
+    config_dir().join("tap-restart-at")
+}
+
 /// 导出目录。迁移/批量导出只往里写，不碰 espanso 的 match 目录。
 pub fn exports_dir() -> PathBuf {
     config_dir().join("exports")

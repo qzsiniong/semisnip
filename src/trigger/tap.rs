@@ -16,7 +16,9 @@
 //!    也**不喂触发状态机**——它们可能是某轮尚未结束的展开（补偿退格 + 展开文本），
 //!    吞了就是"文档留半截触发词"或"展开结果缺一截"，喂进状态机则可能被展开
 //!    文本里的字符误触发（见 [`route_panel_key`]）；
-//! 3. tap 被系统超时摘除后要立刻重新启用，否则用户键盘"半瘫"；
+//! 3. tap 被系统禁用（超时或授权撤销）后**不能重新启用**，只能停掉重建：
+//!    撤销授权时"禁用→启用"会让 WindowServer 陷入自旋、整机卡死（实测只能
+//!    长按电源键复位）；
 //! 4. 带 Cmd/Ctrl 的组合键一律放行并关面板，绝不能把系统快捷键吞掉；
 //! 5. 鼠标事件一律**放行**——我们只借它判断"点在哪"，绝不抢用户的点击。
 //!
@@ -243,13 +245,36 @@ pub fn mark_unavailable(reason: &str) {
         return;
     }
     log::warn!("{reason}");
+    // **必须把 tap 一起停掉**。一个还挂在系统里、却已经没有 run loop 在服务的
+    // tap 比什么都危险：系统会把每个按键都排给它、等它返回，等不到就整机卡住。
+    // 所以撤掉 READY 的同时就关掉这条通路（见 `imp::shutdown` 的注释）。
+    shutdown();
     if let Some(shared) = SHARED.get() {
         shared.panel_open.store(false, Ordering::SeqCst);
+        // 触发键的 keyUp 预约一并作废：tap 不再接管时它没有意义，
+        // 留着会在下一次装上 tap 后意外放行一个本该吞掉的抬起事件。
+        shared.pass_next_key_up.store(false, Ordering::SeqCst);
         if let Ok(mut machine) = shared.machine.lock() {
             machine.reset();
         }
         let _ = shared.tx.send(Event::TapUnavailable(reason.to_string()));
     }
+}
+
+/// 停掉键盘 tap（授权撤销、或 tap 被系统禁用时调）。**只能在主线程调**。
+///
+/// 语义是「这条通路彻底不要了」：禁用 tap、停掉它的 run loop，然后由 [`retry`]
+/// 在冷却后新建一个。
+///
+/// **这里刻意不提供"重新启用"**：早期版本收到 `kCGEventTapDisabledByUserInput`
+/// 后调 `CGEventTapEnable(tap, true)`，撤销授权时实测整机卡死——系统立刻再禁用、
+/// 我们再启用，`WindowServer` 被这条环路拖满，只能长按电源键复位（诊断报告里
+/// 是 `panic: btn_rst`）。更隐蔽的是 `AXIsProcessTrusted()` 有 TCC 缓存：
+/// 授权刚被撤销时它仍返回 `true`，所以"授权还在，重新启用一下"这个判断根本
+/// 不可靠。现在一律当作旧 tap 已死，新建的 tap 才是安全的。
+pub fn shutdown() {
+    #[cfg(target_os = "macos")]
+    imp::shutdown();
 }
 
 /// [`retry`] 的结果。返回值而不是 `bool`，因为面板上的「重新检查」要把
@@ -506,18 +531,22 @@ mod imp {
         ) -> *mut c_void;
         fn CFRunLoopGetCurrent() -> *mut c_void;
         fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+        /// 从别的线程叫停 run loop：当前这次回调返回后 `CFRunLoopRun` 就退出。
+        fn CFRunLoopStop(rl: *mut c_void);
+        /// 让 tap 的 mach port 失效，把它从系统的事件链路上摘下来。
+        fn CFMachPortInvalidate(port: *mut c_void);
+        /// CoreFoundation 的引用计数减一。`CGEventTapCreate` 与
+        /// `CFMachPortCreateRunLoopSource` 返回的对象都归调用方持有。
+        fn CFRelease(cf: *const c_void);
         fn CFRunLoopRun();
     }
 
-    /// 回调线程的可变上下文。
+    /// 回调线程的上下文。
     ///
     /// `Box::leak` 出去（见 `run`），生命周期就是进程——回调里只能拿到裸指针，
-    /// 必须保证它永不释放。`Send/Sync` 手动实现：`AtomicUsize` 与 `Arc` 本身线程
-    /// 安全，`Ctx` 会被回调线程与「重新启用 tap」的路径同时读到。
+    /// 必须保证它永不释放。
     struct Ctx {
         shared: Arc<TapShared>,
-        /// tap 句柄（`CGEventRef` 的整数形态）。被系统禁用时用它重新启用。
-        tap: AtomicUsize,
         /// 自己的 pid，用来识别"这是我合成的事件"。
         self_pid: u32,
     }
@@ -526,8 +555,42 @@ mod imp {
     unsafe impl Send for Ctx {}
     unsafe impl Sync for Ctx {}
 
+    /// tap 的三个句柄：tap 端口、run loop source、run loop 本身。
+    ///
+    /// **必须用锁而不是原子量**：`shutdown()`（主线程）会 `CFRelease` 这些对象，
+    /// 而 `run()` 退出时也会释放。两边必须互斥，否则会出现"主线程用已经释放的
+    /// 指针"——那是崩溃，不是降级。
+    #[derive(Clone, Copy, Default)]
+    struct Handles {
+        tap: usize,
+        source: usize,
+        run_loop: usize,
+    }
+
+    static HANDLES: Mutex<Handles> = Mutex::new(Handles {
+        tap: 0,
+        source: 0,
+        run_loop: 0,
+    });
+
+    /// 主线程已经要求停掉 tap。
+    ///
+    /// 堵的是这样一个窄窗口：撤销授权恰好发生在看门狗重装 tap 的那几毫秒里，
+    /// 系统在 tap 刚启用时就把它禁用了，而 `READY` 还没置位——`mark_unavailable`
+    /// 会因为 `READY` 是 false 而提前返回，线程随后又把 `READY` 置成 true，
+    /// 留下一个"显示就绪、实际已被禁用"的 tap（键盘接管从此静默失效）。
+    /// `run()` 在置 `READY` 之前看一眼这个标记，就能干净退出。
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+
     /// tap 回调。**运行在独立的 run loop 线程上**，必须快：任何阻塞都会让
     /// 系统键盘变卡。所以这里只做判定与投事件，不做 IO、不加长锁。
+    ///
+    /// 曾经这里还有三处 `log::*` 与一次 `CGEventTapEnable`，全部移走了：
+    /// - 日志写的是同一个文件，别的线程（索引重建、IPC）也在写，磁盘一忙就把
+    ///   回调钉在 `write_all` 上——这正是"输入整机卡住几十秒"的来源之一；
+    /// - 在回调里重新启用被撤销授权的 tap 会让系统立刻再禁用，形成高频自旋，
+    ///   WindowServer 被拖满。启用/停止统一交给主线程（[`reenable`] /
+    ///   [`shutdown`]）。
     ///
     /// 返回 `null` 表示吞掉这个事件（目标 App 收不到），返回 `event` 表示放行。
     extern "C" fn callback(
@@ -618,7 +681,6 @@ mod imp {
 
                 match action {
                     TriggerAction::Fired { erase } => {
-                        log::info!("触发命中：keycode={code} erase={erase}");
                         ctx.shared.panel_open.store(true, Ordering::SeqCst);
                         // 这个键照常落进文档（见 `trigger::machine`），它的 keyUp
                         // 到达时面板已经打开，得预约放行，否则目标 App 看到
@@ -657,23 +719,18 @@ mod imp {
                 if ctx.shared.panel_contains(point.x, point.y) {
                     return event;
                 }
-                log::info!("点击面板外（{:.0},{:.0}），收起面板", point.x, point.y);
                 // 与按 Esc 不同的事件：点击会把前台窗口换掉，收尾时不能去动文档。
                 let _ = ctx.shared.tx.send(Event::ClickOutside);
                 event
             }
             DISABLED_TIMEOUT | DISABLED_USER => {
-                // 授权被撤销时重新启用也没意义：撤回「已就绪」，让面板切到授权页，
-                // 而不是继续吞键或假装可用。
-                if !unsafe { AXIsProcessTrusted() } {
-                    mark_unavailable("辅助功能授权已失效，键盘接管停止");
-                    return event;
-                }
-                log::warn!("事件 tap 被系统禁用，尝试重新启用");
-                let tap = ctx.tap.load(Ordering::SeqCst);
-                if tap != 0 {
-                    unsafe { CGEventTapEnable(tap as CGEventRef, true) };
-                }
+                // **这里只投事件，一行别的代码都不加**。
+                //
+                // `AXIsProcessTrusted()`（TCC 查询）、`log::*`（文件 IO）、
+                // `CGEventTapEnable`（会同步回到 WindowServer）都曾经在这里，
+                // 每一样都能把全局输入链路钉住。判定与启停全在主线程做：
+                // 见 `app::scheduler` 的 `Event::TapDisabled` 分支。
+                let _ = ctx.shared.tx.send(Event::TapDisabled);
                 event
             }
             _ => event,
@@ -705,10 +762,32 @@ mod imp {
         }
     }
 
+    /// 彻底停掉当前 tap：先禁用，再叫停 run loop。
+    ///
+    /// 顺序不能反：先停 run loop 再禁用，中间那几微秒里系统还会把按键排进一个
+    /// 没人消费的端口，输入就悬住了。
+    ///
+    /// 只做两件事：`CGEventTapEnable(false)` 与 `CFRunLoopStop`，不在这里
+    /// `CFRelease`——真正的释放发生在线程退出路径（`release_handles`），两个
+    /// 地方用同一把锁互斥，避免重复释放。
+    pub fn shutdown() {
+        STOPPING.store(true, Ordering::SeqCst);
+        // 锁内做完 disable 与 stop：`run()` 退出时会 `CFRelease` 这两个对象，
+        // 不加锁就可能用到已释放的指针。
+        let handles = *HANDLES.lock().unwrap_or_else(|err| err.into_inner());
+        if handles.tap != 0 {
+            unsafe { CGEventTapEnable(handles.tap as CGEventRef, false) };
+        }
+        if handles.run_loop != 0 {
+            unsafe { CFRunLoopStop(handles.run_loop as *mut c_void) };
+        }
+    }
+
     /// 建 tap、挂 run loop、阻塞运行（直到进程退出）。
     ///
     /// `CGEventTapCreate` 必须在**有 run loop 的线程**上调用，所以整个函数都在
-    /// tap 线程里跑，最后进 `CFRunLoopRun()` 不再返回。
+    /// tap 线程里跑，最后进 `CFRunLoopRun()`；被 `shutdown()` 叫停时返回，
+    /// 并在返回前释放 tap 端口与 source（见 `release_handles`）。
     ///
     /// 事件掩码只订阅 keyDown/keyUp 与三种"鼠标按下"：滚动、移动、抬起一概不接，
     /// 减少回调次数，也避免无意中看到用户的鼠标轨迹（我们只需要知道"点在哪"）。
@@ -735,7 +814,6 @@ mod imp {
 
             let ctx = Box::leak(Box::new(Ctx {
                 shared: shared.clone(),
-                tap: AtomicUsize::new(0),
                 self_pid: std::process::id(),
             }));
 
@@ -761,19 +839,69 @@ mod imp {
                 return;
             }
 
-            ctx.tap.store(tap as usize, Ordering::SeqCst);
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             if source.is_null() {
                 log::error!("创建 run loop source 失败");
+                unsafe {
+                    CGEventTapEnable(tap as CGEventRef, false);
+                    CFMachPortInvalidate(tap as *mut c_void);
+                    CFRelease(tap as *const c_void);
+                }
                 return;
             }
             let run_loop = CFRunLoopGetCurrent();
+            {
+                let mut handles = HANDLES.lock().unwrap_or_else(|err| err.into_inner());
+                *handles = Handles {
+                    tap: tap as usize,
+                    source: source as usize,
+                    run_loop: run_loop as usize,
+                };
+            }
             CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+            // 从这一刻起才允许被停止请求影响；再早的 STOPPING 属于上一个 tap 的。
+            STOPPING.store(false, Ordering::SeqCst);
             CGEventTapEnable(tap, true);
+            if STOPPING.load(Ordering::SeqCst) {
+                // 创建期间就被要求停止（撤销授权恰好撞上重装）：别把 READY 置真。
+                log::info!("键盘 tap 在创建期间收到停止请求，已放弃");
+                release_handles();
+                return;
+            }
             READY.store(true, Ordering::SeqCst);
             log::info!("键盘 tap 已就绪");
 
+            // `shutdown()` 会从主线程 `CFRunLoopStop`，这里才会返回；返回即意味着
+            // 这个 tap 已被抛弃，线程随之结束。之后的重装由 `retry` 起新线程。
             CFRunLoopRun();
+            // **必须真的释放**：只 disable 不 release 的话，反复"撤销/授权"会让
+            // 每轮都在系统的事件链路上留下一个 Tap，累计若干轮之后 WindowServer
+            // 处理键鼠时踩到这些残骸，整机卡死（实测第 8 次重建后发生）。
+            // 这里在线程自己手里释放，和 `shutdown` 用同一把锁互斥。
+            release_handles();
+            log::info!("键盘 tap 已停止（线程退出）");
+        }
+    }
+
+    /// 释放 tap 端口与 run loop source（幂等）。
+    ///
+    /// 调用者：tap 线程退出时、以及创建中途放弃时。`shutdown()` 不调用它——
+    /// 那边只负责让 run loop 停下来，释放统一在线程退出路径做，避免两个线程
+    /// 同时 `CFRelease` 同一个对象。
+    unsafe fn release_handles() {
+        let handles = {
+            let mut slot = HANDLES.lock().unwrap_or_else(|err| err.into_inner());
+            std::mem::take(&mut *slot)
+        };
+        if handles.source != 0 {
+            unsafe { CFRelease(handles.source as *const c_void) };
+        }
+        if handles.tap != 0 {
+            unsafe {
+                CGEventTapEnable(handles.tap as CGEventRef, false);
+                CFMachPortInvalidate(handles.tap as *mut c_void);
+                CFRelease(handles.tap as *const c_void);
+            }
         }
     }
 }

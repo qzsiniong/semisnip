@@ -39,6 +39,13 @@ pub enum Event {
     /// 之前这里按"降级触发串长度"回删，前提是 replace 会把 `;;;` 注回文档——
     /// 那个设计让 espanso 的注入和面板的回删抢同一个光标位置，已经废掉。
     Open { origin: Origin, erase: usize },
+    /// tap 被系统禁用（超时或用户撤销授权）。
+    ///
+    /// 回调里**只投这个事件，不查权限、不写日志、不重新启用**：这三件事只要
+    /// 有一件落在回调里，就可能把全局事件链路钉住（TCC 查询会阻塞、日志是
+    /// 文件 IO、`CGEventTapEnable` 会同步回 WindowServer）。判定与启停都在
+    /// 调度器主线程做，见 `scheduler::on_tap_disabled`。
+    TapDisabled,
     /// 面板里的一次按键。只由 tap 线程产生。
     Key(KeyMsg),
     /// 用鼠标点了第 `index` 条候选直接展开。

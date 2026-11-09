@@ -625,6 +625,25 @@ pub fn init_logging() {
             std::io::stderr(),
             file,
         ))))
+        // 默认时间戳是 UTC（形如 `2026-11-09T07:45:35Z`），排障时还要在脑子里
+        // 减 8 小时，很容易把用户说的"16:30 卡死"对错行。这里整体接管输出格式：
+        // 按本地时区写、带偏移量（`+08:00`），并带上毫秒——同一秒内的几条事件
+        // （tap 禁用、停掉、重启）先后顺序要靠它区分。
+        //
+        // env_logger 0.11 的 `format_timestamp` 只接受精度枚举，不能换时区，
+        // 所以只能用 `format` 自己拼。字段顺序保持默认的
+        // `[时间 级别 模块] 消息`，`semisnip log` 的解析依赖"第二个 token 是级别"。
+        .format(|buf, record| {
+            use std::io::Write as _;
+            writeln!(
+                buf,
+                "[{} {:<5} {}] {}",
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
+                record.level(),
+                record.target(),
+                record.args()
+            )
+        })
         .init();
 }
 

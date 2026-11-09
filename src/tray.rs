@@ -251,7 +251,7 @@ fn toggle_enabled(cx: &mut App) {
 /// 先投一条 `Cancel` 把面板收起来：新进程是干净的，不该在屏幕上留一个旧的
 /// 吞键窗口。`launchctl` 是个子进程，等它返回的这段时间足够 scheduler 走完
 /// 一轮事件循环。
-fn restart(cx: &mut App) {
+pub(crate) fn restart(cx: &mut App) {
     if let Some(tx) = event::tx(cx) {
         let _ = tx.send(Event::Cancel);
     }

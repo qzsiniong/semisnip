@@ -4,13 +4,14 @@
 //! 线程访问，轮询是这里最稳的桥。这和 snippets / clipbeam 的做法一致。
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::{App, AsyncApp, Entity};
 
 use crate::app::event::Event;
 use crate::app::state::{self, AppState, Intent};
 use crate::ipc::proto::Origin;
+use crate::paths;
 use crate::trigger::tap;
 use crate::ui;
 
@@ -85,8 +86,19 @@ struct TapWatch {
     /// 面板正卡在授权页且已授权时压回 1 秒——用户在等，不能让他干等 10 秒。
     retry_delay: Duration,
     /// 连续几次读到「已就绪但系统说未授权」。`AXIsProcessTrusted` 存在缓存，
-    /// 单次 false 不足以判定撤销；连续 3 次（约 3 秒）才真正回退。
+    /// 单次 false 不足以判定撤销；连续命中才真正回退。
     untrusted_streak: u32,
+    /// 上次查询系统授权状态的时间。
+    ///
+    /// 只在 tap 已就绪时补查，而且**限频**：TCC 查询放在主线程，没必要每秒
+    /// 问一次；真正的即时信号是 [`Event::TapDisabled`]（撤销时系统会投递）。
+    last_auth_check: Instant,
+    /// 重建 tap 的冷却截止时间。
+    ///
+    /// tap 被系统摘掉之后不能立刻重建（会立刻再被摘掉），也不能走"重新启用"
+    /// 那条路（实测会把 WindowServer 拖死，见 `on_tap_disabled`）。冷却期内
+    /// 看门狗什么都不做，包括面板卡在授权页时的 1 秒快试。
+    cooldown_until: Option<Instant>,
 }
 
 impl TapWatch {
@@ -97,7 +109,44 @@ impl TapWatch {
             next_retry: now,
             retry_delay: Duration::from_secs(1),
             untrusted_streak: 0,
+            last_auth_check: now,
+            // 冷却要跨进程：tap 被禁用会重启 daemon，新进程必须知道"刚刚才
+            // 出过事"，否则会立刻再建一个 tap、再被禁用、再重启，1 秒一圈。
+            cooldown_until: restart_cooldown_left().map(|left| now + left),
         }
+    }
+
+    /// 冷却期内不允许重建。
+    fn cooled_down(&self, now: Instant) -> bool {
+        self.cooldown_until.is_none_or(|until| now >= until)
+    }
+}
+
+/// tap 被禁用后重启 daemon 的冷却时长。
+///
+/// 也是"重启循环"的上限频率：`launchctl kickstart` 通常一秒内就把新进程拉起来，
+/// 如果新进程立刻又建 tap、又被禁用，没有这个冷却就会一秒一次地重启。
+const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// 冷却剩余时长；已过冷却或没有记录时返回 `None`。
+fn restart_cooldown_left() -> Option<Duration> {
+    let stamp = std::fs::read_to_string(paths::tap_restart_marker()).ok()?;
+    let at: u64 = stamp.trim().parse().ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let elapsed = now.saturating_sub(at);
+    (elapsed < RESTART_COOLDOWN.as_secs()).then(|| RESTART_COOLDOWN - Duration::from_secs(elapsed))
+}
+
+/// 记下"因为 tap 被禁用而重启"的时刻，供下一个进程读取。
+///
+/// 写失败不影响正确性（最坏是重启循环），所以只 `debug` 不报错。
+fn remember_restart() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Err(err) = std::fs::write(paths::tap_restart_marker(), now.to_string()) {
+        log::debug!("记录 tap 重启冷却失败：{err}");
     }
 }
 
@@ -141,7 +190,7 @@ pub fn spawn(cx: &mut AsyncApp, state: Entity<AppState>, rx: Receiver<Event>, tx
                 .await;
 
             while let Ok(event) = rx.try_recv() {
-                cx.update(|cx: &mut App| handle(cx, &state, &tx, &mut gate, event));
+                cx.update(|cx: &mut App| handle(cx, &state, &tx, &mut gate, &mut watch, event));
             }
         }
     })
@@ -160,18 +209,30 @@ pub fn spawn(cx: &mut AsyncApp, state: Entity<AppState>, rx: Receiver<Event>, tx
 ///    这里按退避间隔试一次（`retry` 内部还会先看权限，没权限时不会建线程）。
 fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
     const CHECK: Duration = Duration::from_secs(1);
-    /// 撤销判定需要的连续 false 次数（`AXIsProcessTrusted` 有缓存，防误判）。
-    const UNTRUSTED_STREAK: u32 = 3;
+    /// 授权状态的兜底复查间隔。即时信号是 `Event::TapDisabled`；这里只是
+    /// 防止某些 macOS 版本撤销时没投 disabled 事件。
+    ///
+    /// 2 秒而不是 5 秒：撤销授权后每一秒都在冒险——tap 还挂在系统里，用户
+    /// 每按一个键都要经过一条已经失效的通路。多问几次 TCC 的代价可以忽略。
+    const AUTH_CHECK: Duration = Duration::from_secs(2);
+    /// 撤销判定需要的连续 false 次数。
+    ///
+    /// 只用 1 次：`AXIsProcessTrusted` 的缓存在**撤销**方向上不可信（会晚很久
+    /// 才变 false），在**授予**方向上才需要防抖；而刚才 tap 已经证明自己装好
+    /// 了（`ready()` 为真），此时读到 false 就是真的没了。误判的代价只是降级
+    /// 一次、30 秒后自动重建。
+    const UNTRUSTED_STREAK: u32 = 1;
 
     if watch.last_check.elapsed() < CHECK {
         return;
     }
     watch.last_check = Instant::now();
 
-    // tap 已就绪但系统说没授权：连续确认 3 次后撤回，避免"授权了却假死"。
+    // 兜底：tap 已就绪但系统说没授权。连续命中才撤回，避免缓存抖动误伤。
     // 刚授权时 `AXIsProcessTrusted` 可能短暂仍为 false，但那时 `ready()` 还是
     // false，不会进这个分支；等到 tap 真装上了，系统状态也已稳定。
-    if tap::ready() {
+    if tap::ready() && watch.last_auth_check.elapsed() >= AUTH_CHECK {
+        watch.last_auth_check = Instant::now();
         if tap::accessibility_granted() {
             watch.untrusted_streak = 0;
         } else {
@@ -183,7 +244,7 @@ fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
         }
     }
 
-    if !tap::ready() && Instant::now() >= watch.next_retry {
+    if !tap::ready() && Instant::now() >= watch.next_retry && watch.cooled_down(Instant::now()) {
         // 面板正卡在授权页、且系统那边确实已经授权时才用 1 秒快试——
         // 用户在等结果；其余场景按指数退避，避免长期没权限时每 1 秒白建线程。
         let hurry = {
@@ -239,11 +300,54 @@ fn watch_tap(cx: &mut App, state: &Entity<AppState>, watch: &mut TapWatch) {
     );
 }
 
+/// 处理「系统把 tap 摘了」。**只能在这里做，不能回到 tap 回调里做**。
+///
+/// 策略：**不重新启用，停掉 tap，然后重启 daemon**。
+///
+/// 这不是保守，是两次实测的结论：
+///
+/// - 16:10：撤销授权后系统投了 `kCGEventTapDisabledByUserInput`，当时
+///   `AXIsProcessTrusted()` 因为 TCC 缓存仍返回 `true`，于是走了"重新启用"，
+///   两次之后整机卡死（诊断报告 `panic: btn_rst`）。`WindowServer` 被这条
+///   "禁用→启用"环路拖满。
+/// - 16:30：反复撤销/授权若干轮后卡死，日志里前后共创建了 8 个 tap。只
+///   `disable` 不释放的话，每轮都会在系统的事件链路上留下一个残骸，攒够之后就
+///   会在处理键鼠时踩到。
+///
+/// 所以现在是"**一个进程最多一个 tap**"：tap 一旦被系统禁用，就地停掉并
+/// 请求 launchd 重启。进程退出是内核回收 event tap 的唯一确定性时机，
+/// 比任何用户的 teardown 代码都可靠；新进程从零开始，不会累积。
+/// 代价只是菜单栏图标闪一下，换来的是不会再整机卡死——这个交换很划算。
+fn on_tap_disabled(cx: &mut App, watch: &mut TapWatch) {
+    let now = Instant::now();
+    watch.cooldown_until = Some(now + RESTART_COOLDOWN);
+    watch.next_retry = now + RESTART_COOLDOWN;
+    watch.retry_delay = Duration::from_secs(10);
+
+    // 授权状态只用来决定给用户看哪句话，不参与"要不要重新启用"的决策——
+    // TCC 缓存在撤销瞬间不可信，见上面注释。
+    let reason = if tap::accessibility_granted() {
+        "事件监听被系统禁用，键盘接管已停止（正在重启后台以恢复）"
+    } else {
+        "辅助功能授权已失效，键盘接管已停止"
+    };
+    // 先无条件停：`mark_unavailable` 在 `READY` 已经为假时会提前返回，而这里
+    // 要保证"禁用事件一到，tap 一定被拆掉"，包括 tap 正在创建中的窄窗口。
+    tap::shutdown();
+    tap::mark_unavailable(reason);
+    // 先落盘再重启：新进程靠这个时间戳避开"建 tap→被禁用→重启"的一秒一圈。
+    remember_restart();
+    // 停掉之后立刻换一个干净进程：`restart` 成功时 launchd 会终止本进程，
+    // 这里返回之后调度器多半已经没有机会再跑下一轮了。
+    crate::tray::restart(cx);
+}
+
 fn handle(
     cx: &mut App,
     state: &Entity<AppState>,
     tx: &Sender<Event>,
     gate: &mut OpenGate,
+    watch: &mut TapWatch,
     event: Event,
 ) {
     match event {
@@ -339,6 +443,8 @@ fn handle(
 
         // 轻提示到点自动收窗。窗口可能已经被下一次展开顶掉，关闭是幂等的。
         Event::HintClose => ui::toast::close(cx),
+
+        Event::TapDisabled => on_tap_disabled(cx, watch),
 
         Event::TapUnavailable(message) => {
             log::warn!("{message}");
